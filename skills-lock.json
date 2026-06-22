@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "skills": {
+    "business-intelligence": {
+      "source": "borghei/claude-skills",
+      "sourceType": "github",
+      "skillPath": "data-analytics/business-intelligence/SKILL.md",
+      "computedHash": "2fefa94fb1166570b8bd683b1c9766d007967335008eacce941365217a81550e"
+    }
+  }
+}

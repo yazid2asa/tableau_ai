@@ -1,0 +1,51 @@
+Order_ID,Order_Date,Customer,Category,Sub_Category,Region,City,Sales,Profit,Quantity,Discount
+ORD-001,2023-01-15,Alice Martin,Furniture,Chairs,West,Los Angeles,450.50,120.30,3,0.0
+ORD-002,2023-01-22,Bob Chen,Technology,Phones,East,New York,890.00,245.00,1,0.1
+ORD-003,2023-02-10,Claire Dupont,Office Supplies,Paper,Central,Chicago,35.20,15.80,10,0.0
+ORD-004,2023-02-18,David Kim,Furniture,Tables,South,Houston,1250.00,380.00,2,0.0
+ORD-005,2023-03-05,Eva Rodriguez,Technology,Laptops,West,San Francisco,2100.00,520.00,1,0.1
+ORD-006,2023-03-14,Frank Nguyen,Office Supplies,Binders,East,Boston,78.50,-12.40,5,0.3
+ORD-007,2023-04-02,Grace Lee,Furniture,Bookcases,Central,Detroit,620.00,85.00,1,0.2
+ORD-008,2023-04-20,Henri Moreau,Technology,Accessories,South,Miami,45.90,18.60,4,0.0
+ORD-009,2023-05-08,Isabelle Wang,Office Supplies,Pens,West,Seattle,22.30,9.50,12,0.0
+ORD-010,2023-05-19,James Brown,Furniture,Chairs,East,Philadelphia,380.00,-45.00,2,0.3
+ORD-011,2023-06-03,Kayla Smith,Technology,Phones,Central,Minneapolis,1350.00,410.00,2,0.0
+ORD-012,2023-06-15,Liam O'Brien,Office Supplies,Paper,South,Atlanta,42.80,19.20,8,0.0
+ORD-013,2023-07-01,Maria Garcia,Furniture,Tables,West,Los Angeles,980.00,210.00,1,0.1
+ORD-014,2023-07-22,Nathan Park,Technology,Laptops,East,New York,3200.00,890.00,1,0.0
+ORD-015,2023-08-10,Olivia Johnson,Office Supplies,Binders,Central,Chicago,65.00,-8.50,6,0.2
+ORD-016,2023-08-25,Paul Tremblay,Furniture,Bookcases,South,Houston,540.00,72.00,1,0.1
+ORD-017,2023-09-12,Quinn Davis,Technology,Accessories,West,San Francisco,128.00,52.00,3,0.0
+ORD-018,2023-09-28,Rachel Wilson,Office Supplies,Pens,East,Boston,18.50,7.20,15,0.0
+ORD-019,2023-10-05,Samuel Leclerc,Furniture,Chairs,Central,Detroit,720.00,195.00,4,0.0
+ORD-020,2023-10-18,Tanya Patel,Technology,Phones,South,Miami,950.00,280.00,1,0.1
+ORD-021,2023-11-02,Umar Hassan,Office Supplies,Paper,West,Seattle,55.00,24.00,7,0.0
+ORD-022,2023-11-20,Victoria Zhao,Furniture,Tables,East,Philadelphia,1680.00,-120.00,2,0.3
+ORD-023,2023-12-08,William Taylor,Technology,Laptops,Central,Minneapolis,2800.00,750.00,1,0.0
+ORD-024,2023-12-22,Xena Foster,Office Supplies,Binders,South,Atlanta,92.00,31.00,4,0.1
+ORD-025,2024-01-10,Youssef Ali,Furniture,Chairs,West,Los Angeles,510.00,145.00,3,0.0
+ORD-026,2024-01-25,Zoe Anderson,Technology,Phones,East,New York,1100.00,320.00,1,0.0
+ORD-027,2024-02-08,Alice Martin,Office Supplies,Paper,Central,Chicago,28.50,12.80,9,0.0
+ORD-028,2024-02-20,Bob Chen,Furniture,Tables,South,Houston,1450.00,420.00,2,0.0
+ORD-029,2024-03-05,Claire Dupont,Technology,Laptops,West,San Francisco,4500.00,1200.00,2,0.0
+ORD-030,2024-03-18,David Kim,Office Supplies,Pens,East,Boston,32.00,14.50,10,0.0
+ORD-031,2024-04-02,Eva Rodriguez,Furniture,Bookcases,Central,Detroit,780.00,165.00,1,0.1
+ORD-032,2024-04-15,Frank Nguyen,Technology,Accessories,South,Miami,85.00,-15.00,6,0.3
+ORD-033,2024-05-01,Grace Lee,Office Supplies,Binders,West,Seattle,48.00,18.00,3,0.0
+ORD-034,2024-05-20,Henri Moreau,Furniture,Chairs,East,Philadelphia,620.00,180.00,2,0.1
+ORD-035,2024-06-08,Isabelle Wang,Technology,Phones,Central,Minneapolis,1580.00,475.00,2,0.0
+ORD-036,2024-06-22,James Brown,Office Supplies,Paper,South,Atlanta,38.00,-5.20,5,0.2
+ORD-037,2024-07-10,Kayla Smith,Furniture,Tables,West,Los Angeles,2200.00,580.00,3,0.0
+ORD-038,2024-07-25,Liam O'Brien,Technology,Laptops,East,New York,3800.00,980.00,1,0.0
+ORD-039,2024-08-12,Maria Garcia,Office Supplies,Pens,Central,Chicago,15.80,6.90,8,0.0
+ORD-040,2024-08-28,Nathan Park,Furniture,Bookcases,South,Houston,490.00,-85.00,1,0.3
+ORD-041,2024-09-05,Olivia Johnson,Technology,Accessories,West,San Francisco,195.00,78.00,5,0.0
+ORD-042,2024-09-18,Paul Tremblay,Office Supplies,Binders,East,Boston,110.00,42.00,7,0.0
+ORD-043,2024-10-02,Quinn Davis,Furniture,Chairs,Central,Detroit,850.00,230.00,4,0.0
+ORD-044,2024-10-15,Rachel Wilson,Technology,Phones,South,Miami,720.00,195.00,1,0.1
+ORD-045,2024-10-28,Samuel Leclerc,Office Supplies,Paper,West,Seattle,62.00,28.00,6,0.0
+ORD-046,2024-11-10,Tanya Patel,Furniture,Tables,East,Philadelphia,1350.00,310.00,1,0.1
+ORD-047,2024-11-22,Umar Hassan,Technology,Laptops,Central,Minneapolis,2950.00,820.00,1,0.0
+ORD-048,2024-12-05,Victoria Zhao,Office Supplies,Binders,South,Atlanta,55.00,-10.00,4,0.3
+ORD-049,2024-12-15,William Taylor,Furniture,Bookcases,West,Los Angeles,690.00,150.00,1,0.0
+ORD-050,2024-12-28,Xena Foster,Technology,Accessories,East,New York,210.00,88.00,3,0.0

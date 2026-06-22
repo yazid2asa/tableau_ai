@@ -1,0 +1,535 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta http-equiv="refresh" content="30" />
+  <title>Text-to-Viz Monitoring</title>
+  <style>
+    /* ------------------------------------------------------------------ */
+    /* Reset & base                                                         */
+    /* ------------------------------------------------------------------ */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      font-size: 14px;
+      background: #f0f2f5;
+      color: #1a1a2e;
+      min-height: 100vh;
+    }
+
+    /* ------------------------------------------------------------------ */
+    /* Header                                                               */
+    /* ------------------------------------------------------------------ */
+    header {
+      background: #1a1a2e;
+      color: #fff;
+      padding: 0 24px;
+      height: 56px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      box-shadow: 0 2px 8px rgba(0,0,0,.35);
+    }
+
+    header h1 {
+      font-size: 18px;
+      font-weight: 600;
+      letter-spacing: .4px;
+    }
+
+    .header-meta {
+      font-size: 12px;
+      color: #a0aec0;
+    }
+
+    .refresh-badge {
+      display: inline-block;
+      background: #2d3748;
+      border-radius: 12px;
+      padding: 2px 10px;
+      font-size: 11px;
+      color: #90cdf4;
+      margin-left: 12px;
+    }
+
+    /* ------------------------------------------------------------------ */
+    /* Layout                                                               */
+    /* ------------------------------------------------------------------ */
+    main {
+      max-width: 1280px;
+      margin: 0 auto;
+      padding: 24px 20px 48px;
+    }
+
+    section { margin-bottom: 32px; }
+
+    h2 {
+      font-size: 13px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: .8px;
+      color: #718096;
+      margin-bottom: 12px;
+    }
+
+    /* ------------------------------------------------------------------ */
+    /* Card grid                                                            */
+    /* ------------------------------------------------------------------ */
+    .card-grid {
+      display: grid;
+      gap: 16px;
+      grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+    }
+
+    .card {
+      background: #fff;
+      border-radius: 10px;
+      padding: 20px 24px;
+      box-shadow: 0 1px 4px rgba(0,0,0,.08);
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .card .label {
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: .6px;
+      color: #a0aec0;
+    }
+
+    .card .value {
+      font-size: 32px;
+      font-weight: 700;
+      line-height: 1.1;
+    }
+
+    .card .sub {
+      font-size: 12px;
+      color: #718096;
+      margin-top: 2px;
+    }
+
+    /* Value colour helpers */
+    .val-green  { color: #38a169; }
+    .val-yellow { color: #d69e2e; }
+    .val-red    { color: #e53e3e; }
+    .val-blue   { color: #3182ce; }
+    .val-purple { color: #805ad5; }
+
+    /* ------------------------------------------------------------------ */
+    /* Tables                                                               */
+    /* ------------------------------------------------------------------ */
+    .table-wrap {
+      background: #fff;
+      border-radius: 10px;
+      box-shadow: 0 1px 4px rgba(0,0,0,.08);
+      overflow: hidden;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+    }
+
+    thead th {
+      background: #f7fafc;
+      border-bottom: 1px solid #e2e8f0;
+      padding: 10px 16px;
+      text-align: left;
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: .6px;
+      color: #718096;
+      white-space: nowrap;
+    }
+
+    tbody tr:not(:last-child) td {
+      border-bottom: 1px solid #f0f2f5;
+    }
+
+    tbody tr:hover td {
+      background: #f7fafc;
+    }
+
+    td {
+      padding: 10px 16px;
+      vertical-align: middle;
+    }
+
+    .truncate {
+      max-width: 280px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      display: block;
+    }
+
+    /* Status pills */
+    .pill {
+      display: inline-block;
+      border-radius: 10px;
+      padding: 2px 10px;
+      font-size: 11px;
+      font-weight: 600;
+    }
+    .pill-success { background: #c6f6d5; color: #276749; }
+    .pill-error   { background: #fed7d7; color: #9b2c2c; }
+    .pill-partial { background: #fefcbf; color: #744210; }
+
+    /* Score colour */
+    .score-good   { color: #38a169; font-weight: 600; }
+    .score-warn   { color: #d69e2e; font-weight: 600; }
+    .score-bad    { color: #e53e3e; font-weight: 600; }
+    .score-none   { color: #a0aec0; }
+
+    /* ------------------------------------------------------------------ */
+    /* Two-column layout for smaller tables                                 */
+    /* ------------------------------------------------------------------ */
+    .two-col {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+    }
+
+    @media (max-width: 720px) {
+      .two-col { grid-template-columns: 1fr; }
+      .card-grid { grid-template-columns: 1fr 1fr; }
+    }
+
+    @media (max-width: 420px) {
+      .card-grid { grid-template-columns: 1fr; }
+    }
+
+    /* ------------------------------------------------------------------ */
+    /* Empty state                                                          */
+    /* ------------------------------------------------------------------ */
+    .empty {
+      padding: 24px;
+      text-align: center;
+      color: #a0aec0;
+      font-size: 13px;
+    }
+  </style>
+</head>
+<body>
+
+<!-- -------------------------------------------------------------------- -->
+<!-- Header                                                                 -->
+<!-- -------------------------------------------------------------------- -->
+<header>
+  <h1>Text-to-Viz &mdash; Monitoring Dashboard</h1>
+  <span class="header-meta">
+    Last refreshed: {{ now }}
+    <span class="refresh-badge">auto-refresh 30 s</span>
+  </span>
+</header>
+
+<main>
+
+  <!-- ------------------------------------------------------------------ -->
+  <!-- Section 1 — Global stats                                             -->
+  <!-- ------------------------------------------------------------------ -->
+  <section>
+    <h2>Overview</h2>
+    <div class="card-grid">
+
+      <div class="card">
+        <span class="label">Total Generations</span>
+        <span class="value val-blue">{{ metrics.total_generations }}</span>
+        <span class="sub">All-time</span>
+      </div>
+
+      <div class="card">
+        <span class="label">Success Rate</span>
+        {% if metrics.success_rate >= 90 %}
+          <span class="value val-green">{{ metrics.success_rate }}%</span>
+        {% elif metrics.success_rate >= 70 %}
+          <span class="value val-yellow">{{ metrics.success_rate }}%</span>
+        {% else %}
+          <span class="value val-red">{{ metrics.success_rate }}%</span>
+        {% endif %}
+        <span class="sub">status == "success"</span>
+      </div>
+
+      <div class="card">
+        <span class="label">Avg Judge Score</span>
+        {% if metrics.avg_judge_score >= 0.75 %}
+          <span class="value val-green">{{ "%.2f"|format(metrics.avg_judge_score) }}</span>
+        {% elif metrics.avg_judge_score >= 0.5 %}
+          <span class="value val-yellow">{{ "%.2f"|format(metrics.avg_judge_score) }}</span>
+        {% elif metrics.avg_judge_score > 0 %}
+          <span class="value val-red">{{ "%.2f"|format(metrics.avg_judge_score) }}</span>
+        {% else %}
+          <span class="value val-blue">—</span>
+        {% endif %}
+        <span class="sub">0 = poor &nbsp;·&nbsp; 1 = excellent</span>
+      </div>
+
+      <div class="card">
+        <span class="label">Avg Latency</span>
+        <span class="value val-purple">{{ metrics.avg_latency_ms | int }} ms</span>
+        <span class="sub">P95: {{ metrics.p95_latency_ms | int }} ms</span>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- ------------------------------------------------------------------ -->
+  <!-- Section 2 — Feedback                                                 -->
+  <!-- ------------------------------------------------------------------ -->
+  <section>
+    <h2>User Feedback</h2>
+    <div class="card-grid" style="grid-template-columns: repeat(auto-fill, minmax(160px, 1fr))">
+
+      <div class="card">
+        <span class="label">Positive</span>
+        <span class="value val-green">{{ metrics.feedback_positive }}</span>
+        <span class="sub">score &ge; 0.5</span>
+      </div>
+
+      <div class="card">
+        <span class="label">Negative</span>
+        <span class="value val-red">{{ metrics.feedback_negative }}</span>
+        <span class="sub">score &lt; 0.5</span>
+      </div>
+
+      <div class="card">
+        <span class="label">Total Feedback</span>
+        <span class="value val-blue">{{ metrics.feedback_positive + metrics.feedback_negative }}</span>
+        <span class="sub">all ratings</span>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- ------------------------------------------------------------------ -->
+  <!-- Section 3 — Distribution tables                                      -->
+  <!-- ------------------------------------------------------------------ -->
+  <section>
+    <h2>Distributions</h2>
+    <div class="two-col">
+
+      <!-- Viz-type distribution -->
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Viz Type</th>
+              <th style="text-align:right">Count</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% if metrics.viz_type_distribution %}
+              {% for vt, cnt in metrics.viz_type_distribution.items() %}
+              <tr>
+                <td>{{ vt.replace("_", " ").title() }}</td>
+                <td style="text-align:right; font-weight:600;">{{ cnt }}</td>
+              </tr>
+              {% endfor %}
+            {% else %}
+              <tr><td colspan="2" class="empty">No data yet</td></tr>
+            {% endif %}
+          </tbody>
+        </table>
+      </div>
+
+      <!-- Judge score buckets -->
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Judge Score Range</th>
+              <th style="text-align:right">Count</th>
+              <th style="text-align:right">Quality</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>0.75 – 1.0</td>
+              <td style="text-align:right; font-weight:600;">{{ metrics.judge_score_buckets["0.75-1.0"] }}</td>
+              <td style="text-align:right"><span class="pill pill-success">Good</span></td>
+            </tr>
+            <tr>
+              <td>0.5 – 0.75</td>
+              <td style="text-align:right; font-weight:600;">{{ metrics.judge_score_buckets["0.5-0.75"] }}</td>
+              <td style="text-align:right"><span class="pill pill-partial">Partial</span></td>
+            </tr>
+            <tr>
+              <td>0.0 – 0.5</td>
+              <td style="text-align:right; font-weight:600;">{{ metrics.judge_score_buckets["0.0-0.5"] }}</td>
+              <td style="text-align:right"><span class="pill pill-error">Poor</span></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- ------------------------------------------------------------------ -->
+  <!-- Section 4 — Hourly activity (last 24 h)                              -->
+  <!-- ------------------------------------------------------------------ -->
+  <section>
+    <h2>Hourly Activity &mdash; Last 24 Hours</h2>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            {% for bucket in metrics.hourly_generations %}
+            <th style="text-align:center; min-width:44px;">{{ bucket.hour }}</th>
+            {% endfor %}
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            {% for bucket in metrics.hourly_generations %}
+            <td style="text-align:center;">
+              {% if bucket.count > 0 %}
+                <span style="font-weight:700; color:#3182ce;">{{ bucket.count }}</span>
+              {% else %}
+                <span style="color:#e2e8f0;">0</span>
+              {% endif %}
+            </td>
+            {% endfor %}
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ------------------------------------------------------------------ -->
+  <!-- Section 5 — Recent generations                                       -->
+  <!-- ------------------------------------------------------------------ -->
+  <section>
+    <h2>Recent Generations</h2>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Time</th>
+            <th>Question</th>
+            <th>Viz Type</th>
+            <th style="text-align:right">Judge Score</th>
+            <th style="text-align:right">Latency</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% if metrics.recent_generations %}
+            {% for row in metrics.recent_generations %}
+            <tr>
+              <td style="white-space:nowrap; color:#718096;">
+                {% if row.created_at %}
+                  {{ row.created_at.strftime("%Y-%m-%d %H:%M") if row.created_at is not string else row.created_at[:16] }}
+                {% else %}
+                  —
+                {% endif %}
+              </td>
+              <td>
+                <span class="truncate" title="{{ row.question }}">{{ row.question }}</span>
+              </td>
+              <td>{{ (row.viz_type or "—").replace("_", " ").title() }}</td>
+              <td style="text-align:right;">
+                {% if row.judge_score is not none and row.judge_score is not none %}
+                  {% if row.judge_score >= 0.75 %}
+                    <span class="score-good">{{ "%.2f"|format(row.judge_score) }}</span>
+                  {% elif row.judge_score >= 0.5 %}
+                    <span class="score-warn">{{ "%.2f"|format(row.judge_score) }}</span>
+                  {% else %}
+                    <span class="score-bad">{{ "%.2f"|format(row.judge_score) }}</span>
+                  {% endif %}
+                {% else %}
+                  <span class="score-none">—</span>
+                {% endif %}
+              </td>
+              <td style="text-align:right; font-variant-numeric:tabular-nums;">
+                {{ (row.latency_ms | int) if row.latency_ms is not none else "—" }} ms
+              </td>
+              <td>
+                {% if row.status == "success" %}
+                  <span class="pill pill-success">success</span>
+                {% elif row.status == "error" %}
+                  <span class="pill pill-error">error</span>
+                {% else %}
+                  <span class="pill pill-partial">{{ row.status or "—" }}</span>
+                {% endif %}
+              </td>
+            </tr>
+            {% endfor %}
+          {% else %}
+            <tr><td colspan="6" class="empty">No generations recorded yet</td></tr>
+          {% endif %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ------------------------------------------------------------------ -->
+  <!-- Section 6 — Recent feedback                                          -->
+  <!-- ------------------------------------------------------------------ -->
+  <section>
+    <h2>Recent Feedback</h2>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Time</th>
+            <th>Trace ID</th>
+            <th style="text-align:right">Score</th>
+            <th>Comment</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% if metrics.recent_feedback %}
+            {% for fb in metrics.recent_feedback %}
+            <tr>
+              <td style="white-space:nowrap; color:#718096;">
+                {% if fb.timestamp %}
+                  {{ fb.timestamp.strftime("%Y-%m-%d %H:%M") if fb.timestamp is not string else fb.timestamp[:16] }}
+                {% else %}
+                  —
+                {% endif %}
+              </td>
+              <td>
+                <code style="font-size:11px; color:#718096;">
+                  {{ (fb.trace_id or "")[:8] }}&hellip;
+                </code>
+              </td>
+              <td style="text-align:right;">
+                {% if fb.score is not none %}
+                  {% if fb.score >= 0.5 %}
+                    <span class="score-good">{{ "%.2f"|format(fb.score) }}</span>
+                  {% else %}
+                    <span class="score-bad">{{ "%.2f"|format(fb.score) }}</span>
+                  {% endif %}
+                {% else %}
+                  <span class="score-none">—</span>
+                {% endif %}
+              </td>
+              <td>
+                <span class="truncate" title="{{ fb.comment or '' }}">
+                  {{ fb.comment if fb.comment else '—' }}
+                </span>
+              </td>
+            </tr>
+            {% endfor %}
+          {% else %}
+            <tr><td colspan="4" class="empty">No feedback recorded yet</td></tr>
+          {% endif %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+</main>
+</body>
+</html>

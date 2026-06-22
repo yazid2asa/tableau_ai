@@ -1,0 +1,296 @@
+<mxGraphModel dx="1800" dy="1000" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1920" pageHeight="1080" math="0" shadow="1">
+  <root>
+    <mxCell id="0" />
+    <mxCell id="1" parent="0" />
+
+    <!-- ============================================================ -->
+    <!-- TITLE -->
+    <!-- ============================================================ -->
+    <mxCell id="title" value="Text-to-Viz Agent — Architecture" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=28;fontStyle=1;fontColor=#1a1a2e;" vertex="1" parent="1">
+      <mxGeometry x="560" y="20" width="800" height="50" as="geometry" />
+    </mxCell>
+    <mxCell id="subtitle" value="Full-stack AI agent: Natural Language → Tableau .twb workbooks" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=14;fontColor=#4a4a6a;" vertex="1" parent="1">
+      <mxGeometry x="560" y="65" width="800" height="30" as="geometry" />
+    </mxCell>
+
+    <!-- ============================================================ -->
+    <!-- ZONE A — USER INTERFACE (Tableau Extension) -->
+    <!-- ============================================================ -->
+    <mxCell id="zone_ui" value="① USER INTERFACE" style="swimlane;startSize=35;fillColor=#dae8fc;strokeColor=#6c8ebf;fontStyle=1;fontSize=13;fontColor=#1a1a2e;swimlaneLine=1;rounded=1;arcSize=5;" vertex="1" parent="1">
+      <mxGeometry x="40" y="110" width="260" height="380" as="geometry" />
+    </mxCell>
+
+    <mxCell id="ext_panel" value="&lt;b&gt;Tableau Desktop Extension&lt;/b&gt;&lt;br/&gt;.trex manifest&lt;br/&gt;index.html (Chat UI)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;" vertex="1" parent="zone_ui">
+      <mxGeometry x="20" y="60" width="220" height="60" as="geometry" />
+    </mxCell>
+
+    <mxCell id="chat_input" value="💬 Chat Input&lt;br/&gt;Natural Language Question" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=11;" vertex="1" parent="zone_ui">
+      <mxGeometry x="20" y="145" width="220" height="50" as="geometry" />
+    </mxCell>
+
+    <mxCell id="data_picker" value="📂 Data File Path&lt;br/&gt;Excel / CSV selector&lt;br/&gt;(persisted via Extension Settings)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;" vertex="1" parent="zone_ui">
+      <mxGeometry x="20" y="215" width="220" height="60" as="geometry" />
+    </mxCell>
+
+    <mxCell id="chart_cart" value="🛒 Chart Cart&lt;br/&gt;Multi-sheet accumulator&lt;br/&gt;Download Workbook | Remove" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=11;" vertex="1" parent="zone_ui">
+      <mxGeometry x="20" y="295" width="220" height="60" as="geometry" />
+    </mxCell>
+
+    <!-- ============================================================ -->
+    <!-- ZONE B — RAG LAYER (NEW — planned) -->
+    <!-- ============================================================ -->
+    <mxCell id="zone_rag" value="② RAG LAYER  ✦ NEW" style="swimlane;startSize=35;fillColor=#fff2cc;strokeColor=#d6b656;fontStyle=1;fontSize=13;fontColor=#7d5a00;swimlaneLine=1;rounded=1;arcSize=5;dashed=1;dashPattern=8 4;" vertex="1" parent="1">
+      <mxGeometry x="340" y="110" width="270" height="380" as="geometry" />
+    </mxCell>
+
+    <mxCell id="metadata_api" value="&lt;b&gt;Tableau Metadata API&lt;/b&gt;&lt;br/&gt;Datasource schema&lt;br/&gt;(fields, types, relationships)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;" vertex="1" parent="zone_rag">
+      <mxGeometry x="20" y="60" width="230" height="60" as="geometry" />
+    </mxCell>
+
+    <mxCell id="vector_store" value="🗄 Vector Store&lt;br/&gt;Semantic embeddings of&lt;br/&gt;datasource schemas + fields" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=11;" vertex="1" parent="zone_rag">
+      <mxGeometry x="20" y="150" width="230" height="60" as="geometry" />
+    </mxCell>
+
+    <mxCell id="retriever" value="🔍 Semantic Retriever&lt;br/&gt;Top-K relevant fields&lt;br/&gt;for the user question" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;" vertex="1" parent="zone_rag">
+      <mxGeometry x="20" y="240" width="230" height="60" as="geometry" />
+    </mxCell>
+
+    <mxCell id="preproc" value="⚙ Pre-processing&lt;br/&gt;Missing datasource detection&lt;br/&gt;Auto field imputation / fallback" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=11;" vertex="1" parent="zone_rag">
+      <mxGeometry x="20" y="320" width="230" height="45" as="geometry" />
+    </mxCell>
+
+    <!-- ============================================================ -->
+    <!-- ZONE C — LLM PIPELINE -->
+    <!-- ============================================================ -->
+    <mxCell id="zone_llm" value="③ LLM PIPELINE" style="swimlane;startSize=35;fillColor=#f8cecc;strokeColor=#b85450;fontStyle=1;fontSize=13;fontColor=#1a1a2e;swimlaneLine=1;rounded=1;arcSize=5;" vertex="1" parent="1">
+      <mxGeometry x="650" y="110" width="280" height="380" as="geometry" />
+    </mxCell>
+
+    <mxCell id="prompt_builder" value="📝 Prompt Builder&lt;br/&gt;prompts.py&lt;br/&gt;Question + Schema context" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;" vertex="1" parent="zone_llm">
+      <mxGeometry x="20" y="60" width="240" height="55" as="geometry" />
+    </mxCell>
+
+    <mxCell id="llm_call" value="🧠 LLM Call #1&lt;br/&gt;OpenRouter API&lt;br/&gt;minimax/minimax-m2.5:free&lt;br/&gt;→ Structured VizIntent JSON" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=11;fontStyle=1;" vertex="1" parent="zone_llm">
+      <mxGeometry x="20" y="135" width="240" height="70" as="geometry" />
+    </mxCell>
+
+    <mxCell id="task_router" value="🔀 Task Router&lt;br/&gt;create_chart | calc_field&lt;br/&gt;filter_view | add_to_workbook" style="shape=rhombus;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;" vertex="1" parent="zone_llm">
+      <mxGeometry x="50" y="225" width="180" height="80" as="geometry" />
+    </mxCell>
+
+    <mxCell id="sse_stream" value="📡 SSE Stream&lt;br/&gt;/chat/stream&lt;br/&gt;Real-time events" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;" vertex="1" parent="zone_llm">
+      <mxGeometry x="20" y="325" width="240" height="45" as="geometry" />
+    </mxCell>
+
+    <!-- ============================================================ -->
+    <!-- ZONE D — TWB GENERATOR -->
+    <!-- ============================================================ -->
+    <mxCell id="zone_twb" value="④ TWB GENERATOR" style="swimlane;startSize=35;fillColor=#d5e8d4;strokeColor=#82b366;fontStyle=1;fontSize=13;fontColor=#1a1a2e;swimlaneLine=1;rounded=1;arcSize=5;" vertex="1" parent="1">
+      <mxGeometry x="970" y="110" width="290" height="380" as="geometry" />
+    </mxCell>
+
+    <mxCell id="twb_editor" value="🛠 TWBEditor (twilize)&lt;br/&gt;XSD-validated .twb XML&lt;br/&gt;twb_generator.py" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;fontStyle=1;" vertex="1" parent="zone_twb">
+      <mxGeometry x="20" y="60" width="250" height="60" as="geometry" />
+    </mxCell>
+
+    <mxCell id="chart_types" value="📊 Supported Charts&lt;br/&gt;Bar · Line · Pie · Scatter · Area&lt;br/&gt;Heatmap · Treemap · Gantt&lt;br/&gt;KPI · Combo (Dual Axis)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=10;" vertex="1" parent="zone_twb">
+      <mxGeometry x="20" y="145" width="250" height="75" as="geometry" />
+    </mxCell>
+
+    <mxCell id="datasource_wiring" value="🔌 Datasource Wiring&lt;br/&gt;_apply_data_file()&lt;br/&gt;Excel → excel-direct&lt;br/&gt;CSV → textscan (lxml)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;" vertex="1" parent="zone_twb">
+      <mxGeometry x="20" y="240" width="250" height="65" as="geometry" />
+    </mxCell>
+
+    <mxCell id="multi_sheet" value="📑 Multi-sheet .twb&lt;br/&gt;generate_multi_sheet_twb()&lt;br/&gt;POST /download/{session_id}" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=11;" vertex="1" parent="zone_twb">
+      <mxGeometry x="20" y="325" width="250" height="45" as="geometry" />
+    </mxCell>
+
+    <!-- ============================================================ -->
+    <!-- ZONE E — QUALITY & OBSERVABILITY -->
+    <!-- ============================================================ -->
+    <mxCell id="zone_obs" value="⑤ QUALITY &amp; OBSERVABILITY" style="swimlane;startSize=35;fillColor=#e1d5e7;strokeColor=#9673a6;fontStyle=1;fontSize=13;fontColor=#1a1a2e;swimlaneLine=1;rounded=1;arcSize=5;" vertex="1" parent="1">
+      <mxGeometry x="650" y="540" width="610" height="290" as="geometry" />
+    </mxCell>
+
+    <mxCell id="judge" value="⚖ LLM-as-a-Judge&lt;br/&gt;judge.py — Call #2&lt;br/&gt;4 criteria → score ≥ 0.75&lt;br/&gt;Retry up to 2×" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=11;fontStyle=1;" vertex="1" parent="zone_obs">
+      <mxGeometry x="20" y="50" width="180" height="80" as="geometry" />
+    </mxCell>
+
+    <mxCell id="langfuse" value="☁ LangFuse Cloud&lt;br/&gt;observability.py&lt;br/&gt;Traces · Spans · Scores" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;" vertex="1" parent="zone_obs">
+      <mxGeometry x="220" y="50" width="170" height="80" as="geometry" />
+    </mxCell>
+
+    <mxCell id="jsonl_log" value="📄 JSONL Logger&lt;br/&gt;logger.py&lt;br/&gt;logs/llm_traces.jsonl&lt;br/&gt;100MB rotation" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;" vertex="1" parent="zone_obs">
+      <mxGeometry x="410" y="50" width="180" height="80" as="geometry" />
+    </mxCell>
+
+    <mxCell id="sqlite_db" value="🗄 SQLite (SQLAlchemy)&lt;br/&gt;Feedback table&lt;br/&gt;GenerationLog table" style="shape=cylinder3;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;" vertex="1" parent="zone_obs">
+      <mxGeometry x="20" y="165" width="180" height="75" as="geometry" />
+    </mxCell>
+
+    <mxCell id="monitoring" value="📈 Monitoring Dashboard&lt;br/&gt;GET /monitoring (Jinja2)&lt;br/&gt;12 KPIs · auto-refresh 30s" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;" vertex="1" parent="zone_obs">
+      <mxGeometry x="220" y="165" width="370" height="75" as="geometry" />
+    </mxCell>
+
+    <!-- ============================================================ -->
+    <!-- ZONE F — OUTPUT & DAEMON -->
+    <!-- ============================================================ -->
+    <mxCell id="zone_output" value="⑥ OUTPUT &amp; AUTO-OPEN" style="swimlane;startSize=35;fillColor=#f0f0f0;strokeColor=#666666;fontStyle=1;fontSize=13;fontColor=#1a1a2e;swimlaneLine=1;rounded=1;arcSize=5;" vertex="1" parent="1">
+      <mxGeometry x="1300" y="110" width="270" height="380" as="geometry" />
+    </mxCell>
+
+    <mxCell id="output_folder" value="📁 output/ folder&lt;br/&gt;Generated .twb files" style="shape=folder;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;" vertex="1" parent="zone_output">
+      <mxGeometry x="60" y="60" width="160" height="70" as="geometry" />
+    </mxCell>
+
+    <mxCell id="daemon" value="🔄 Local Daemon&lt;br/&gt;daemon.py&lt;br/&gt;watchdog on output/&lt;br/&gt;3s debounce" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;fontStyle=1;" vertex="1" parent="zone_output">
+      <mxGeometry x="40" y="165" width="190" height="70" as="geometry" />
+    </mxCell>
+
+    <mxCell id="tableau_protocol" value="🖥 Tableau Desktop&lt;br/&gt;tableau:// protocol handler&lt;br/&gt;Auto-opens .twb" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;fontStyle=1;" vertex="1" parent="zone_output">
+      <mxGeometry x="40" y="265" width="190" height="70" as="geometry" />
+    </mxCell>
+
+    <!-- ============================================================ -->
+    <!-- FASTAPI BACKEND LABEL -->
+    <!-- ============================================================ -->
+    <mxCell id="backend_label" value="FastAPI Backend  ·  localhost:8000" style="text;html=1;strokeColor=#b85450;fillColor=#f8cecc;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=1;fontSize=12;fontStyle=1;fontColor=#b85450;" vertex="1" parent="1">
+      <mxGeometry x="650" y="80" width="610" height="28" as="geometry" />
+    </mxCell>
+
+    <!-- ============================================================ -->
+    <!-- ANIMATED ARROWS — MAIN FLOW -->
+    <!-- ============================================================ -->
+
+    <!-- UI → RAG -->
+    <mxCell id="e1" value="question + schema" style="edgeStyle=orthogonalEdgeStyle;flowAnimation=1;rounded=1;orthogonalLoop=1;jettySize=auto;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;strokeColor=#6c8ebf;strokeWidth=2.5;fillColor=#dae8fc;" edge="1" parent="1" source="zone_ui" target="zone_rag">
+      <mxGeometry relative="1" as="geometry" />
+    </mxCell>
+
+    <!-- RAG → LLM -->
+    <mxCell id="e2" value="enriched context" style="edgeStyle=orthogonalEdgeStyle;flowAnimation=1;rounded=1;orthogonalLoop=1;jettySize=auto;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;strokeColor=#b85450;strokeWidth=2.5;fillColor=#f8cecc;" edge="1" parent="1" source="zone_rag" target="zone_llm">
+      <mxGeometry relative="1" as="geometry" />
+    </mxCell>
+
+    <!-- LLM → TWB -->
+    <mxCell id="e3" value="VizIntent JSON" style="edgeStyle=orthogonalEdgeStyle;flowAnimation=1;rounded=1;orthogonalLoop=1;jettySize=auto;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;strokeColor=#82b366;strokeWidth=2.5;fillColor=#d5e8d4;" edge="1" parent="1" source="zone_llm" target="zone_twb">
+      <mxGeometry relative="1" as="geometry" />
+    </mxCell>
+
+    <!-- TWB → Output -->
+    <mxCell id="e4" value=".twb file" style="edgeStyle=orthogonalEdgeStyle;flowAnimation=1;rounded=1;orthogonalLoop=1;jettySize=auto;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;strokeColor=#666666;strokeWidth=2.5;" edge="1" parent="1" source="zone_twb" target="zone_output">
+      <mxGeometry relative="1" as="geometry" />
+    </mxCell>
+
+    <!-- LLM → Judge (down) -->
+    <mxCell id="e5" value="score TWB" style="edgeStyle=orthogonalEdgeStyle;flowAnimation=1;rounded=1;orthogonalLoop=1;jettySize=auto;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.2;entryY=0;entryDx=0;entryDy=0;strokeColor=#9673a6;strokeWidth=2;fillColor=#e1d5e7;dashed=0;" edge="1" parent="1" source="zone_llm" target="zone_obs">
+      <mxGeometry relative="1" as="geometry" />
+    </mxCell>
+
+    <!-- TWB → Judge -->
+    <mxCell id="e6" value="" style="edgeStyle=orthogonalEdgeStyle;flowAnimation=1;rounded=1;orthogonalLoop=1;jettySize=auto;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;strokeColor=#9673a6;strokeWidth=2;fillColor=#e1d5e7;" edge="1" parent="1" source="zone_twb" target="zone_obs">
+      <mxGeometry relative="1" as="geometry" />
+    </mxCell>
+
+    <!-- Judge retry loop -->
+    <mxCell id="e7" value="score &lt; 0.75 → retry" style="edgeStyle=elbowEdgeStyle;flowAnimation=1;rounded=1;elbow=vertical;strokeColor=#b85450;strokeWidth=2;dashed=1;dashPattern=6 3;curved=1;" edge="1" parent="1" source="judge" target="llm_call">
+      <mxGeometry relative="1" as="geometry">
+        <Array as="points">
+          <mxPoint x="790" y="830" />
+          <mxPoint x="790" y="290" />
+        </Array>
+      </mxGeometry>
+    </mxCell>
+
+    <!-- Daemon watches output -->
+    <mxCell id="e8" value="watchdog&lt;br/&gt;on_created/on_modified" style="edgeStyle=orthogonalEdgeStyle;flowAnimation=1;rounded=1;strokeColor=#6c8ebf;strokeWidth=2;" edge="1" parent="1" source="output_folder" target="daemon">
+      <mxGeometry relative="1" as="geometry" />
+    </mxCell>
+
+    <!-- Daemon opens Tableau -->
+    <mxCell id="e9" value="tableau:// open" style="edgeStyle=orthogonalEdgeStyle;flowAnimation=1;rounded=1;strokeColor=#82b366;strokeWidth=2.5;" edge="1" parent="1" source="daemon" target="tableau_protocol">
+      <mxGeometry relative="1" as="geometry" />
+    </mxCell>
+
+    <!-- Metadata API → Vector Store -->
+    <mxCell id="e10" value="index schema" style="edgeStyle=orthogonalEdgeStyle;flowAnimation=1;rounded=1;strokeColor=#d6b656;strokeWidth=2;dashed=1;dashPattern=6 3;" edge="1" parent="zone_rag" source="metadata_api" target="vector_store">
+      <mxGeometry relative="1" as="geometry" />
+    </mxCell>
+
+    <!-- Vector Store → Retriever -->
+    <mxCell id="e11" value="top-K fields" style="edgeStyle=orthogonalEdgeStyle;flowAnimation=1;rounded=1;strokeColor=#d6b656;strokeWidth=2;dashed=1;dashPattern=6 3;" edge="1" parent="zone_rag" source="vector_store" target="retriever">
+      <mxGeometry relative="1" as="geometry" />
+    </mxCell>
+
+    <!-- Retriever → Preproc -->
+    <mxCell id="e12" value="missing fields?" style="edgeStyle=orthogonalEdgeStyle;flowAnimation=1;rounded=1;strokeColor=#d6b656;strokeWidth=2;dashed=1;dashPattern=6 3;" edge="1" parent="zone_rag" source="retriever" target="preproc">
+      <mxGeometry relative="1" as="geometry" />
+    </mxCell>
+
+    <!-- ============================================================ -->
+    <!-- LEGEND -->
+    <!-- ============================================================ -->
+    <mxCell id="legend_title" value="LEGEND" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;fontStyle=1;fontSize=12;" vertex="1" parent="1">
+      <mxGeometry x="40" y="560" width="100" height="30" as="geometry" />
+    </mxCell>
+
+    <mxCell id="leg1" value="" style="edgeStyle=orthogonalEdgeStyle;flowAnimation=1;strokeColor=#6c8ebf;strokeWidth=2.5;" edge="1" parent="1">
+      <mxGeometry relative="1" as="geometry">
+        <mxPoint x="40" y="600" as="sourcePoint" />
+        <mxPoint x="130" y="600" as="targetPoint" />
+      </mxGeometry>
+    </mxCell>
+    <mxCell id="leg1_lbl" value="Main data flow" style="text;html=1;strokeColor=none;fillColor=none;align=left;fontSize=11;" vertex="1" parent="1">
+      <mxGeometry x="140" y="590" width="120" height="20" as="geometry" />
+    </mxCell>
+
+    <mxCell id="leg2" value="" style="edgeStyle=orthogonalEdgeStyle;flowAnimation=1;strokeColor=#b85450;strokeWidth=2;dashed=1;dashPattern=6 3;" edge="1" parent="1">
+      <mxGeometry relative="1" as="geometry">
+        <mxPoint x="40" y="630" as="sourcePoint" />
+        <mxPoint x="130" y="630" as="targetPoint" />
+      </mxGeometry>
+    </mxCell>
+    <mxCell id="leg2_lbl" value="Retry / feedback loop" style="text;html=1;strokeColor=none;fillColor=none;align=left;fontSize=11;" vertex="1" parent="1">
+      <mxGeometry x="140" y="620" width="140" height="20" as="geometry" />
+    </mxCell>
+
+    <mxCell id="leg3" value="" style="edgeStyle=orthogonalEdgeStyle;flowAnimation=1;strokeColor=#d6b656;strokeWidth=2;dashed=1;dashPattern=6 3;" edge="1" parent="1">
+      <mxGeometry relative="1" as="geometry">
+        <mxPoint x="40" y="660" as="sourcePoint" />
+        <mxPoint x="130" y="660" as="targetPoint" />
+      </mxGeometry>
+    </mxCell>
+    <mxCell id="leg3_lbl" value="RAG (planned)" style="text;html=1;strokeColor=none;fillColor=none;align=left;fontSize=11;fontColor=#7d5a00;" vertex="1" parent="1">
+      <mxGeometry x="140" y="650" width="120" height="20" as="geometry" />
+    </mxCell>
+
+    <mxCell id="leg4" value="✦ NEW" style="rounded=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;fontStyle=1;fontColor=#7d5a00;" vertex="1" parent="1">
+      <mxGeometry x="40" y="680" width="80" height="25" as="geometry" />
+    </mxCell>
+    <mxCell id="leg4_lbl" value="Planned feature" style="text;html=1;strokeColor=none;fillColor=none;align=left;fontSize=11;fontColor=#7d5a00;" vertex="1" parent="1">
+      <mxGeometry x="140" y="678" width="120" height="20" as="geometry" />
+    </mxCell>
+
+    <!-- ============================================================ -->
+    <!-- JUDGE CRITERIA BREAKDOWN (mini table) -->
+    <!-- ============================================================ -->
+    <mxCell id="judge_criteria" value="&lt;b&gt;Judge Criteria&lt;/b&gt;&lt;br/&gt;• Field cohesion — 30%&lt;br/&gt;• Viz relevance — 35%&lt;br/&gt;• XML validity — 25%&lt;br/&gt;• Completeness — 10%&lt;br/&gt;Min score: &lt;b&gt;0.75&lt;/b&gt; / Max retries: &lt;b&gt;2×&lt;/b&gt;" style="text;html=1;strokeColor=#b85450;fillColor=#fff0f0;align=left;verticalAlign=top;whiteSpace=wrap;rounded=1;fontSize=11;spacingLeft=8;" vertex="1" parent="1">
+      <mxGeometry x="40" y="730" width="200" height="110" as="geometry" />
+    </mxCell>
+
+    <!-- ============================================================ -->
+    <!-- SESSION FLOW NOTE -->
+    <!-- ============================================================ -->
+    <mxCell id="session_note" value="&lt;b&gt;Session flow&lt;/b&gt;&lt;br/&gt;Each session_id (UUID4) holds:&lt;br/&gt;• Conversation history (in-memory)&lt;br/&gt;• Chart cart (VizIntent list)&lt;br/&gt;• Data file path (Extension settings)" style="text;html=1;strokeColor=#6c8ebf;fillColor=#dae8fc;align=left;verticalAlign=top;whiteSpace=wrap;rounded=1;fontSize=11;spacingLeft=8;" vertex="1" parent="1">
+      <mxGeometry x="260" y="730" width="230" height="110" as="geometry" />
+    </mxCell>
+
+    <!-- ============================================================ -->
+    <!-- API ENDPOINTS REFERENCE -->
+    <!-- ============================================================ -->
+    <mxCell id="api_endpoints" value="&lt;b&gt;Key API Endpoints&lt;/b&gt;&lt;br/&gt;POST /chat — NL → .twb&lt;br/&gt;POST /chat/stream — SSE&lt;br/&gt;GET /session/{id}/charts — cart&lt;br/&gt;POST /download/{id} — multi-sheet&lt;br/&gt;GET /monitoring — dashboard&lt;br/&gt;POST /feedback — rating" style="text;html=1;strokeColor=#82b366;fillColor=#d5e8d4;align=left;verticalAlign=top;whiteSpace=wrap;rounded=1;fontSize=11;spacingLeft=8;" vertex="1" parent="1">
+      <mxGeometry x="510" y="730" width="230" height="120" as="geometry" />
+    </mxCell>
+
+  </root>
+</mxGraphModel>

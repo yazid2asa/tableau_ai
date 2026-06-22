@@ -1,0 +1,842 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Viz Agent</title>
+  <!--
+    Tableau Extensions API — download from:
+    https://github.com/tableau/extensions-api/releases
+    and place tableau.extensions.1.latest.js next to this file,
+    OR let the CDN version load (requires internet).
+  -->
+  <script src="./tableau.extensions.1.latest.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/marked@9/marked.min.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-size: 13px;
+      background: #f5f5f5;
+      color: #333;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    #header {
+      background: #1f4e79;
+      color: white;
+      padding: 8px 12px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-shrink: 0;
+    }
+    #header h1 { font-size: 14px; font-weight: 600; }
+    #ds-badge {
+      margin-left: auto;
+      font-size: 11px;
+      background: rgba(255,255,255,0.15);
+      padding: 2px 8px;
+      border-radius: 10px;
+      max-width: 180px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    #chat-area {
+      flex: 1;
+      overflow-y: auto;
+      padding: 10px 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .msg {
+      max-width: 90%;
+      padding: 8px 10px;
+      border-radius: 8px;
+      line-height: 1.4;
+      word-wrap: break-word;
+    }
+    .msg.user {
+      align-self: flex-end;
+      background: #1f4e79;
+      color: white;
+    }
+    .msg.assistant {
+      align-self: flex-start;
+      background: white;
+      border: 1px solid #ddd;
+      max-width: 95%;
+    }
+    .msg.assistant h1,.msg.assistant h2,.msg.assistant h3 {
+      font-size: 13px;
+      font-weight: 700;
+      color: #1f4e79;
+      margin: 8px 0 4px;
+      border-bottom: 1px solid #e8eef5;
+      padding-bottom: 2px;
+    }
+    .msg.assistant h1 { font-size: 14px; }
+    .msg.assistant p { margin: 4px 0; }
+    .msg.assistant ul,.msg.assistant ol { padding-left: 18px; margin: 4px 0; }
+    .msg.assistant li { margin: 2px 0; }
+    .msg.assistant strong { color: #1f4e79; }
+    .msg.assistant em { color: #555; }
+    .msg.assistant code {
+      background: #f0f4ff;
+      border: 1px solid #c5cfe8;
+      border-radius: 3px;
+      padding: 1px 4px;
+      font-size: 11px;
+      font-family: "Consolas", monospace;
+    }
+    .msg.assistant pre {
+      background: #f5f5f5;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+      padding: 8px;
+      overflow-x: auto;
+      margin: 6px 0;
+    }
+    .msg.assistant pre code { background: none; border: none; padding: 0; }
+    .msg.assistant table {
+      border-collapse: collapse;
+      width: 100%;
+      margin: 6px 0;
+      font-size: 12px;
+    }
+    .msg.assistant th {
+      background: #1f4e79;
+      color: white;
+      padding: 5px 8px;
+      text-align: left;
+      font-weight: 600;
+    }
+    .msg.assistant td {
+      padding: 4px 8px;
+      border-bottom: 1px solid #eee;
+    }
+    .msg.assistant tr:nth-child(even) td { background: #f8fafc; }
+    .msg.assistant tr:hover td { background: #e8f0f8; }
+    .msg.assistant blockquote {
+      border-left: 3px solid #1f4e79;
+      margin: 6px 0;
+      padding: 4px 10px;
+      background: #f0f4ff;
+      color: #555;
+      font-style: italic;
+    }
+    .msg.assistant hr {
+      border: none;
+      border-top: 1px solid #eee;
+      margin: 8px 0;
+    }
+    .msg.error {
+      align-self: flex-start;
+      background: #fff0f0;
+      border: 1px solid #f5c6cb;
+      color: #721c24;
+    }
+    .msg.status-bubble {
+      align-self: flex-start;
+      background: #f0f4ff;
+      border: 1px solid #c5cfe8;
+      color: #4a5568;
+      font-style: italic;
+      font-size: 12px;
+    }
+
+    .suggestion-btn {
+      display: inline-block;
+      margin-top: 6px;
+      padding: 4px 10px;
+      background: #fff;
+      border: 1px solid #f5c6cb;
+      border-radius: 4px;
+      font-size: 11px;
+      color: #721c24;
+      cursor: pointer;
+    }
+    .suggestion-btn:hover { background: #fff0f0; }
+
+    .msg.clarification {
+      align-self: flex-start;
+      background: #fff8e1;
+      border: 1px solid #ffe082;
+      color: #5d4037;
+    }
+    .clarification-input {
+      display: flex;
+      gap: 4px;
+      margin-top: 6px;
+    }
+    .clarification-input input {
+      flex: 1;
+      padding: 5px 8px;
+      border: 1px solid #ffe082;
+      border-radius: 4px;
+      font-size: 12px;
+    }
+    .clarification-input button {
+      padding: 5px 10px;
+      background: #ff8f00;
+      color: white;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 12px;
+    }
+    .clarification-input button:hover { background: #e65100; }
+
+    .result-card {
+      align-self: flex-start;
+      background: white;
+      border: 1px solid #ddd;
+      border-radius: 8px;
+      padding: 10px;
+      width: 100%;
+      max-width: 340px;
+    }
+    .result-card .chart-type {
+      font-weight: 600;
+      color: #1f4e79;
+      margin-bottom: 4px;
+    }
+    .result-card .chart-title {
+      font-size: 12px;
+      color: #555;
+      margin-bottom: 8px;
+    }
+    .result-card .fields {
+      font-size: 11px;
+      color: #777;
+      margin-bottom: 8px;
+    }
+    .open-notice {
+      font-size: 12px;
+      color: #2e7d32;
+      font-weight: 500;
+    }
+
+    #input-area {
+      padding: 8px 12px;
+      border-top: 1px solid #ddd;
+      background: white;
+      display: flex;
+      gap: 6px;
+      flex-shrink: 0;
+    }
+    #question {
+      flex: 1;
+      padding: 7px 10px;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+      font-size: 13px;
+      outline: none;
+    }
+    #question:focus { border-color: #1f4e79; }
+    #send-btn {
+      padding: 7px 14px;
+      background: #1f4e79;
+      color: white;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 13px;
+      font-weight: 500;
+    }
+    #send-btn:disabled { background: #aaa; cursor: not-allowed; }
+    #send-btn:hover:not(:disabled) { background: #163a5f; }
+
+    #add-to-wb-row {
+      padding: 4px 12px 0;
+      background: white;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 11px;
+      color: #555;
+    }
+    #add-to-wb-row input[type="checkbox"] { cursor: pointer; }
+
+    .spinner {
+      display: inline-block;
+      width: 12px; height: 12px;
+      border: 2px solid #ccc;
+      border-top-color: #1f4e79;
+      border-radius: 50%;
+      animation: spin 0.7s linear infinite;
+      vertical-align: middle;
+      margin-right: 6px;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    #cart-actions {
+      display: flex;
+      gap: 6px;
+      padding: 6px 12px;
+      background: #f5f5f5;
+      border-top: 1px solid #ddd;
+      flex-shrink: 0;
+    }
+    #download-workbook-btn {
+      flex: 1;
+      padding: 6px;
+      background: #1f4e79;
+      color: white;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 12px;
+      font-weight: 600;
+    }
+    #download-workbook-btn:disabled { background: #aaa; cursor: default; }
+    #new-session-btn {
+      padding: 6px 10px;
+      background: #666;
+      color: white;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 12px;
+    }
+    .result-card .remove-btn {
+      font-size: 11px;
+      padding: 2px 6px;
+      background: #f5c6cb;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      margin-left: 6px;
+      color: #721c24;
+    }
+    .server-view-link {
+      display: inline-block;
+      margin-top: 8px;
+      padding: 6px 14px;
+      background: #1f4e79;
+      color: #fff;
+      border-radius: 6px;
+      text-decoration: none;
+      font-size: 13px;
+      cursor: pointer;
+    }
+    .server-view-link:hover {
+      background: #163a5c;
+    }
+  </style>
+</head>
+<body>
+
+<div id="header">
+  <h1>Viz Agent</h1>
+  <span id="ds-badge">Connecting…</span>
+</div>
+
+<div id="chat-area"></div>
+
+<div id="add-to-wb-row" >
+  <input type="checkbox" id="add-to-wb" hidden/>
+  <label for="add-to-wb" hidden>Add to my open workbook</label>
+</div>
+<div id="input-area">
+  <input id="question" type="text" placeholder="Ask a question about your data…" autocomplete="off" />
+  <button id="send-btn">Generate</button>
+</div>
+<div id="cart-actions">
+  <button id="download-workbook-btn" disabled>⬇ Download Workbook (0 charts)</button>
+  <button id="new-session-btn">🔄 New Session</button>
+</div>
+
+<script>
+  // Auto-detect API base URL: use the origin that served this page (works for localhost AND tunnel)
+  const API = window.location.origin;
+  let sessionId = crypto.randomUUID();
+  let currentMetadata = null;
+  let conversationHistory = [];
+  let sessionCart = [];  // local mirror of server-side cart (viz intents)
+
+  // ── Tableau type mapping ────────────────────────────────────────────────
+  function mapType(tableauType) {
+    const map = {
+      string: 'string', integer: 'integer', float: 'float', real: 'float',
+      date: 'date', 'date-time': 'datetime', boolean: 'boolean',
+    };
+    return map[(tableauType || '').toLowerCase()] || 'string';
+  }
+
+  // ── Metadata extraction ─────────────────────────────────────────────────
+  async function extractMetadata() {
+    try {
+      let dataSources = [];
+      try {
+        dataSources = await tableau.extensions.workbook.getActiveDatasourcesAsync();
+      } catch (_) {
+        // Fallback for older API: get datasources from first worksheet
+        const worksheets = tableau.extensions.dashboardContent
+          ? tableau.extensions.dashboardContent.dashboard.worksheets
+          : [];
+        if (worksheets.length) {
+          dataSources = await worksheets[0].getDataSourcesAsync();
+        }
+      }
+      if (!dataSources.length) {
+        document.getElementById('ds-badge').textContent = 'Server mode';
+        return;
+      }
+
+      const ds = dataSources[0];
+
+      // Extract connection summary (API 1.7+, best-effort)
+      let connectionInfo = null;
+      try {
+        const summaries = await ds.getConnectionSummariesAsync();
+        if (summaries.length) {
+          connectionInfo = {
+            connection_type: summaries[0].type || null,
+            server_address: summaries[0].serverAddress || null,
+            server_port: summaries[0].serverPort ? String(summaries[0].serverPort) : null,
+          };
+        }
+      } catch (_) { /* API not available in this version */ }
+
+      // Extract logical table names (API 1.7+, best-effort)
+      let logicalTableNames = [];
+      try {
+        const tables = await ds.getLogicalTablesAsync();
+        logicalTableNames = tables.map(t => t.caption || t.id || '').filter(Boolean);
+      } catch (_) { /* API not available in this version */ }
+
+      currentMetadata = {
+        datasource_name: ds.name,
+        datasource_caption: ds.name,
+        fields: ds.fields.map(f => ({
+          name: f.name,
+          type: mapType(f.dataType),
+          role: (f.role || '').toLowerCase() === 'measure' ? 'measure' : 'dimension',
+        })),
+        connection: connectionInfo,
+        logical_table_names: logicalTableNames,
+      };
+
+      document.getElementById('ds-badge').textContent =
+        `${ds.name} · ${ds.fields.length} fields`;
+    } catch (e) {
+      document.getElementById('ds-badge').textContent = 'No datasource';
+    }
+  }
+
+  // ── Session cart ────────────────────────────────────────────────────────
+  function updateCartButton() {
+    const btn = document.getElementById('download-workbook-btn');
+    const n = sessionCart.length;
+    btn.textContent = `⬇ Download Workbook (${n} chart${n !== 1 ? 's' : ''})`;
+    btn.disabled = n === 0;
+  }
+
+  function removeFromCart(index, cardEl) {
+    sessionCart.splice(index, 1);
+    // Re-index remaining remove buttons
+    document.querySelectorAll('.result-card').forEach((el, i) => {
+      const btn = el.querySelector('.remove-btn');
+      if (btn) btn.setAttribute('data-index', i);
+    });
+    cardEl.remove();
+    updateCartButton();
+  }
+
+  document.getElementById('download-workbook-btn').addEventListener('click', async () => {
+    if (sessionCart.length === 0) return;
+    const btn = document.getElementById('download-workbook-btn');
+    btn.disabled = true;
+    btn.textContent = '⏳ Generating…';
+    try {
+      const res = await fetch(`${API}/download/${sessionId}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          metadata: currentMetadata,
+          charts: sessionCart,
+        }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ detail: res.statusText }));
+        appendMessage('error', `⚠ Download failed: ${escHtml(err.detail || 'Unknown error')}`);
+      } else {
+        const blob = await res.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `workbook_${sessionCart.length}charts.twb`;
+        a.click();
+        URL.revokeObjectURL(url);
+      }
+    } catch (e) {
+      appendMessage('error', `⚠ ${escHtml(e.message)}`);
+    }
+    updateCartButton();
+  });
+
+  document.getElementById('new-session-btn').addEventListener('click', async () => {
+    if (sessionCart.length > 0 && !confirm('Start a new session? Current charts will be cleared.')) return;
+    // Reset client state
+    sessionCart = [];
+    conversationHistory = [];
+    const oldSession = sessionId;
+    sessionId = crypto.randomUUID();
+    // Clear chat area
+    document.getElementById('chat-area').innerHTML = '';
+    updateCartButton();
+    // Reset server session
+    try {
+      await fetch(`${API}/session/reset`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session_id: oldSession }),
+      });
+    } catch (_) {}
+  });
+
+  // ── Tableau init ────────────────────────────────────────────────────────
+  async function init() {
+    try {
+      await tableau.extensions.initializeAsync();
+      await extractMetadata();
+    } catch (e) {
+      // Running outside Tableau (dev mode)
+      document.getElementById('ds-badge').textContent = 'Dev mode (no Tableau)';
+    }
+  }
+
+  // ── UI helpers ──────────────────────────────────────────────────────────
+  function appendMessage(role, html) {
+    const area = document.getElementById('chat-area');
+    const div = document.createElement('div');
+    div.className = `msg ${role}`;
+    div.innerHTML = html;
+    area.appendChild(div);
+    area.scrollTop = area.scrollHeight;
+    return div;
+  }
+
+  function appendStatusBubble(text) {
+    const area = document.getElementById('chat-area');
+    const div = document.createElement('div');
+    div.className = 'msg status-bubble';
+    div.innerHTML = `<span class="spinner"></span>${escHtml(text)}`;
+    area.appendChild(div);
+    area.scrollTop = area.scrollHeight;
+    return div;
+  }
+
+  function appendResult(data) {
+    const area = document.getElementById('chat-area');
+    const v = data.viz_intent;
+
+    // Add to local cart (not for sheet_added mode — that modifies existing workbook)
+    let cartIndex = -1;
+    if (data.mode !== 'sheet_added') {
+      cartIndex = sessionCart.length;
+      sessionCart.push(v);
+      updateCartButton();
+    }
+
+    const card = document.createElement('div');
+    card.className = 'result-card';
+
+    let actionHtml = '';
+    if (data.mode === 'sheet_added') {
+      actionHtml = `<span class="open-notice">✓ Sheet added to workbook</span>`;
+    }
+
+    const removeBtnHtml = cartIndex >= 0
+      ? `<button class="remove-btn" data-index="${cartIndex}">🗑</button>`
+      : '';
+
+    // Render filter summary — without this users can't tell a follow-up
+    // "filter by X" actually applied (the X/Y line stays identical).
+    const filtersHtml = (v.filters && v.filters.length)
+      ? `<div class="fields"><b>Filtres:</b> ${v.filters.map(f => {
+          const op = (f.op || '').toLowerCase();
+          if (op === 'eq')         return `${escHtml(f.field)} = ${escHtml(String(f.value ?? ''))}`;
+          if (op === 'in')         return `${escHtml(f.field)} ∈ [${(f.values || []).map(escHtml).join(', ')}]`;
+          if (op === 'gt')         return `${escHtml(f.field)} > ${escHtml(String(f.value ?? ''))}`;
+          if (op === 'gte')        return `${escHtml(f.field)} ≥ ${escHtml(String(f.value ?? ''))}`;
+          if (op === 'lt')         return `${escHtml(f.field)} < ${escHtml(String(f.value ?? ''))}`;
+          if (op === 'lte')        return `${escHtml(f.field)} ≤ ${escHtml(String(f.value ?? ''))}`;
+          if (op === 'between')    return `${escHtml(f.field)} ∈ [${escHtml(String(f.min ?? ''))}, ${escHtml(String(f.max ?? ''))}]`;
+          if (op === 'year')       return `${escHtml(f.field)} year = ${escHtml(String(f.value ?? ''))}`;
+          if (op === 'quarter')    return `${escHtml(f.field)} Q${escHtml(String(f.value ?? ''))}`;
+          if (op === 'month')      return `${escHtml(f.field)} month = ${escHtml(String(f.value ?? ''))}`;
+          if (op === 'top_n')      return `top ${escHtml(String(f.value ?? 10))} ${escHtml(f.field)}`;
+          if (op === 'bottom_n')   return `bottom ${escHtml(String(f.value ?? 5))} ${escHtml(f.field)}`;
+          return `${escHtml(f.field)} (${escHtml(op)})`;
+        }).join(' ; ')}</div>`
+      : '';
+    const calcHtml = (v.calculated_fields && v.calculated_fields.length)
+      ? `<div class="fields"><b>Calc:</b> ${v.calculated_fields.map(c => `${escHtml(c.name)} = ${escHtml(c.formula)}`).join(' ; ')}</div>`
+      : '';
+
+    card.innerHTML = `
+      <div class="chart-type">${v.viz_type.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())}</div>
+      <div class="chart-title">${escHtml(v.title)}${removeBtnHtml}</div>
+      <div class="fields">
+        <b>X:</b> ${escHtml(v.x_field)} &nbsp; <b>Y:</b> ${escHtml(v.y_field)}
+        ${v.color_field ? `&nbsp; <b>${v.viz_type === 'combo' ? '2nd axis' : 'Color'}:</b> ${escHtml(v.color_field)}` : ''}
+      </div>
+      ${filtersHtml}
+      ${calcHtml}
+      ${actionHtml}
+    `;
+
+    // Wire up remove button
+    if (cartIndex >= 0) {
+      const removeBtn = card.querySelector('.remove-btn');
+      if (removeBtn) removeBtn.addEventListener('click', () => removeFromCart(cartIndex, card));
+    }
+
+    // Add "View on Tableau Server" link
+    if (data.view_url) {
+      const viewBtn = document.createElement('a');
+      viewBtn.href = data.view_url;
+      viewBtn.target = '_blank';
+      viewBtn.textContent = 'View on Tableau Server';
+      viewBtn.className = 'server-view-link';
+      card.appendChild(viewBtn);
+    }
+
+    area.appendChild(card);
+    area.scrollTop = area.scrollHeight;
+  }
+
+  function appendClarification(message) {
+    const area = document.getElementById('chat-area');
+    const div = document.createElement('div');
+    div.className = 'msg clarification';
+    div.innerHTML = `
+      <div>🤔 ${escHtml(message)}</div>
+      <div class="clarification-input">
+        <input type="text" placeholder="Your answer…" />
+        <button>Send</button>
+      </div>
+    `;
+    const input = div.querySelector('input');
+    const btn = div.querySelector('button');
+    const submit = () => {
+      const answer = input.value.trim();
+      if (!answer) return;
+      document.getElementById('question').value = answer;
+      div.querySelector('.clarification-input').remove();
+      sendQuestion();
+    };
+    btn.addEventListener('click', submit);
+    input.addEventListener('keydown', e => { if (e.key === 'Enter') submit(); });
+    area.appendChild(div);
+    area.scrollTop = area.scrollHeight;
+    input.focus();
+  }
+
+  function appendConversation(message) {
+    const area = document.getElementById('chat-area');
+    const div = document.createElement('div');
+    div.className = 'msg assistant';
+    div.innerHTML = typeof marked !== 'undefined'
+      ? marked.parse(message, { breaks: true, gfm: true })
+      : message.replace(/\n/g, '<br>');
+    area.appendChild(div);
+    area.scrollTop = area.scrollHeight;
+  }
+
+  function appendErrorWithSuggestion(errorData) {
+    const msg = errorData.message || 'An error occurred';
+    const suggestion = errorData.suggestion || null;
+    let html = `⚠ ${escHtml(msg)}`;
+    if (suggestion) {
+      const safeSuggestion = suggestion.replace(/'/g, "\\'");
+      html += `<br><small style="color:#999;font-style:italic">${escHtml(suggestion)}</small>`;
+      if (suggestion.startsWith('Try') || suggestion.startsWith('Did you')) {
+        html += `<br><button class="suggestion-btn" onclick="document.getElementById('question').value='${safeSuggestion}';this.closest('.msg').remove()">Try this →</button>`;
+      }
+    }
+    appendMessage('error', html);
+  }
+
+  function escHtml(str) {
+    return String(str)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  }
+
+  // ── SSE buffer parser ───────────────────────────────────────────────────
+  function parseSSEChunk(buffer) {
+    const events = [];
+    const blocks = buffer.split('\n\n');
+    const remainder = blocks.pop();
+
+    for (const block of blocks) {
+      if (!block.trim()) continue;
+      let event = 'message';
+      let data = '';
+      for (const line of block.split('\n')) {
+        if (line.startsWith('event: ')) event = line.slice(7).trim();
+        else if (line.startsWith('data: ')) data = line.slice(6).trim();
+      }
+      if (data) {
+        try { events.push({ event, data: JSON.parse(data) }); }
+        catch { /* skip malformed */ }
+      }
+    }
+    return { events, remainder };
+  }
+
+  // ── Send question ───────────────────────────────────────────────────────
+  async function sendQuestion() {
+    const input = document.getElementById('question');
+    const question = input.value.trim();
+    if (!question) return;
+
+    appendMessage('user', escHtml(question));
+    input.value = '';
+
+    const btn = document.getElementById('send-btn');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span>Generating…';
+
+    let workbook_name = null;
+    if (document.getElementById('add-to-wb').checked) {
+      try {
+        workbook_name = tableau.extensions.workbook.name || null;
+      } catch (_) {
+        workbook_name = null;
+      }
+    }
+
+    if (typeof ReadableStream !== 'undefined') {
+      await sendWithStream(question, workbook_name);
+    } else {
+      await sendWithFetch(question, workbook_name);
+    }
+
+    btn.disabled = false;
+    btn.textContent = 'Generate';
+  }
+
+  async function sendWithStream(question, workbook_name) {
+    let statusBubble = appendStatusBubble('Analysing question…');
+    let buffer = '';
+
+    try {
+      const res = await fetch(`${API}/chat/stream`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          question,
+          session_id: sessionId,
+          metadata: currentMetadata,
+          conversation_history: conversationHistory,
+          workbook_name,
+        }),
+      });
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ detail: res.statusText }));
+        statusBubble.remove();
+        appendMessage('error', `⚠ ${escHtml(err.detail || 'Request failed')}`);
+        return;
+      }
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const { events, remainder } = parseSSEChunk(buffer);
+        buffer = remainder;
+
+        for (const { event, data } of events) {
+          if (event === 'status') {
+            statusBubble.innerHTML = `<span class="spinner"></span>${escHtml(data.message || '')}`;
+          } else if (event === 'result') {
+            statusBubble.remove();
+            if (data.mode === 'clarification' && data.clarification_needed) {
+              appendClarification(data.clarification_needed || data.message);
+              return;
+            }
+            if (data.mode === 'conversation') {
+              appendConversation(data.message);
+              conversationHistory.push({ role: 'user', content: question });
+              conversationHistory.push({ role: 'assistant', content: data.message });
+              return;
+            }
+            conversationHistory.push({ role: 'user', content: question });
+            conversationHistory.push({ role: 'assistant', content: JSON.stringify(data.viz_intent) });
+            appendResult(data);
+          } else if (event === 'error') {
+            statusBubble.remove();
+            appendErrorWithSuggestion(data);
+            return;
+          }
+        }
+      }
+    } catch (e) {
+      statusBubble.remove();
+      appendMessage('error', `⚠ ${escHtml(e.message)}`);
+    }
+  }
+
+  async function sendWithFetch(question, workbook_name) {
+    try {
+      const res = await fetch(`${API}/chat`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          question,
+          session_id: sessionId,
+          metadata: currentMetadata,
+          conversation_history: conversationHistory,
+          workbook_name,
+        }),
+      });
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ detail: res.statusText }));
+        throw new Error(err.detail || 'Request failed');
+      }
+
+      const data = await res.json();
+      if (data.mode === 'clarification' && data.clarification_needed) {
+        appendClarification(data.clarification_needed || data.message);
+        return;
+      }
+      if (data.mode === 'conversation') {
+        appendConversation(data.message);
+        conversationHistory.push({ role: 'user', content: question });
+        conversationHistory.push({ role: 'assistant', content: data.message });
+        return;
+      }
+      conversationHistory.push({ role: 'user', content: question });
+      conversationHistory.push({ role: 'assistant', content: JSON.stringify(data.viz_intent) });
+      appendResult(data);
+    } catch (e) {
+      appendMessage('error', `⚠ ${escHtml(e.message)}`);
+    }
+  }
+
+  // ── Event listeners ─────────────────────────────────────────────────────
+  document.getElementById('send-btn').addEventListener('click', sendQuestion);
+  document.getElementById('question').addEventListener('keydown', e => {
+    if (e.key === 'Enter' && !e.shiftKey) sendQuestion();
+  });
+
+  init();
+</script>
+</body>
+</html>

@@ -10,7 +10,9 @@ httpx
 tableauserverclient
 jinja2
 python-dotenv
-twilize
+# twilize is NOT on PyPI (and the upstream GitHub repo is gone) — install from the vendored wheel.
+# The path is resolved relative to this requirements.txt file (pip >= 20.1).
+./vendor/twilize-0.33.0-py3-none-any.whl
 openpyxl
 watchdog
 langfuse

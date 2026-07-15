@@ -5,7 +5,6 @@ from pathlib import Path
 # Known Tableau sample datasources to auto-exclude
 SAMPLE_DS_PATTERNS = [
     "superstore", "world indicators", "sample -", "sample_",
-    
     "regional", "world bank", "earthquake", "global superstore",
     "coffee chain", "startupvcs",
 ]
@@ -18,19 +17,31 @@ class Settings(BaseSettings):
 
     # Groq provider
     groq_api_key: str = ""
-    groq_model_id: str = "mixtral-8x7b"
+    groq_model_id: str = "qwen3.6-27b"
     groq_base_url: str = "https://api.groq.com/openai/v1"
 
-    # Google provider
+    # Google provider (PRIMARY — measured 2026-07-09: gemini-2.5-flash 20/20
+    # on eval_intent vs mistral-large 16/20 / mistral-medium 13/20; the repo
+    # rule adopts a new primary only on a measured ≥).
     google_api_key: str = ""
-    google_model_id: str = "gemini-3.1-flash-lite"
+    google_model_id: str = "gemini-2.5-flash"
 
-    # Provider selection: "groq" | "openrouter" | "google"
+    # Mistral provider (La Plateforme, OpenAI-compatible endpoint) — the paid,
+    # reliable FALLBACK #1 behind Google (kicks in on Gemini free-tier 429s,
+    # ahead of the free OpenRouter model). mistral-large-latest measured 16/20
+    # (> medium's 13/20) — good enough for burst traffic, not for primary.
+    mistral_api_key: str = ""
+    mistral_model_id: str = "mistral-large-latest"
+    mistral_base_url: str = "https://api.mistral.ai/v1"
+
+    # Provider selection: "google" (primary) | "mistral" | "openrouter" | "groq" (legacy).
+    # Fallback chains (transient errors / missing key — see llm.py):
+    #   google → mistral → openrouter ; mistral → google → openrouter ; groq → openrouter
     llm_provider: str = "google"
 
     # Judge provider (can differ from main LLM)
     judge_provider: str = "google"
-    judge_model_id: str = "gemini-3.1-flash-lite"
+    judge_model_id: str = "gemini-2.5-flash"
 
     database_url: str = "sqlite+aiosqlite:///./data/texttoviz.db"
     output_dir: Path = Path("output")

@@ -1,12 +1,13 @@
 import re
 import uuid
+from datetime import date, timedelta
 from pathlib import Path
 
 from lxml import etree
 from twilize.twb_editor import TWBEditor
 from twilize.validator import TWBValidationError
 
-from schemas import VizIntent, DataSourceMetadata, FieldInfo, FieldType
+from schemas import VizIntent, DataSourceMetadata, FieldInfo, FieldType, CalculatedField
 from config import settings
 
 # VizIntent.viz_type → twilize mark_type
@@ -20,7 +21,10 @@ VIZ_TYPE_TO_MARK: dict[str, str] = {
     "treemap": "Tree Map",
     
     "text": "Text",
-    "gantt": "Gantt Bar",
+    # FIX-045: the valid Tableau mark primitive is "GanttBar" (no space). Both
+    # "Gantt Bar" (twilize's old default) and "Gantt" are rejected by Tableau's
+    # native parser at publish ("Invalid primitive type ..."). Verified empirically.
+    "gantt": "GanttBar",
 }
 
 # FieldType.value → twilize datatype
@@ -292,24 +296,28 @@ def _build_filters_for_twilize(viz: VizIntent) -> list[dict] | None:
     if not viz.filters:
         return None
 
+    agg = (viz.aggregation or "SUM").upper()
     twilize_filters = []
     for f in viz.filters:
         op = f.op
         field = f.field
 
-        if op in ("top_n",):
+        if op in ("top_n", "bottom_n"):
+            # FIX-047: the rank-by measure must be AGGREGATED. Passing a bare field
+            # name made twilize emit `NONE([field])` as the order expression, which
+            # Tableau cannot rank by — the published view either errored on query
+            # ("problem querying the data") or returned every row unfiltered. Wrap
+            # `by` in the chart aggregation so twilize emits `SUM([field])`.
+            by_field = f.by or viz.y_field
+            by_expr = _agg_wrap(viz, by_field, agg) if by_field else None
+            default_n = 10 if op == "top_n" else 5
             twilize_filters.append({
                 "column": field,
-                "top": f.value or 10,
-                "by": f.by or viz.y_field,
-                "direction": "DESC",
-            })
-        elif op in ("bottom_n",):
-            twilize_filters.append({
-                "column": field,
-                "top": f.value or 5,
-                "by": f.by or viz.y_field,
-                "direction": "ASC",
+                "top": int(f.value) if f.value is not None else default_n,
+                "by": by_expr,
+                # bottom_n = the N SMALLEST: twilize always emits end="top", so an
+                # ASC ordering takes the lowest-ranked N (verified on the server).
+                "direction": "DESC" if op == "top_n" else "ASC",
             })
         elif op in ("gt", "gte"):
             twilize_filters.append({
@@ -331,54 +339,99 @@ def _build_filters_for_twilize(viz: VizIntent) -> list[dict] | None:
                 "max": str(f.max if f.max is not None else 0),
             })
         elif op == "eq":
+            val = f.value
+            if isinstance(val, bool):
+                val = str(val).lower()
+            elif val is not None:
+                val = str(val)
             twilize_filters.append({
                 "column": field,
-                "values": [f.value] if f.value is not None else [],
+                "values": [val] if val is not None else [],
             })
         elif op == "in":
             twilize_filters.append({
                 "column": field,
                 "values": f.values or [],
             })
-        elif op in ("year", "quarter", "month"):
-            val = int(f.value) if f.value is not None else 2024
-            if op == "year":
-                twilize_filters.append({
-                    "column": field,
-                    "type": "quantitative",
-                    "min": f"#{val}-01-01#",
-                    "max": f"#{val}-12-31#",
-                })
-            elif op == "quarter":
-                q_start_month = (val - 1) * 3 + 1
-                q_end_month = val * 3
-                year = int(f.year) if hasattr(f, "year") and f.year else 2024
-                twilize_filters.append({
-                    "column": field,
-                    "type": "quantitative",
-                    "min": f"#{year}-{q_start_month:02d}-01#",
-                    "max": f"#{year}-{q_end_month:02d}-28#",
-                })
-            else:  # month
-                year = 2024
-                twilize_filters.append({
-                    "column": field,
-                    "type": "quantitative",
-                    "min": f"#{year}-{val:02d}-01#",
-                    "max": f"#{year}-{val:02d}-28#",
-                })
-        elif op in ("last_n_days", "last_n_months"):
+        elif op in ("neq", "not_in"):
+            # Exclusion: twilize has no native exclude filter. Emit the same empty
+            # categorical placeholder as not_null; the post-save pass
+            # _apply_exclude_filters rewrites it to except(all-members, excluded)
+            # — the form Tableau uses for an exclude filter (FIX-055).
             twilize_filters.append({
                 "column": field,
-                "values": [],  # Tableau will show all — relative date needs manual XML
+                "values": [],
+            })
+        elif op == "date_range":
+            # Explicit date span ("de mars à juin 2025") → quantitative date range,
+            # the exact form the `year` op already uses (verified on the Server).
+            spec: dict = {"column": field, "type": "quantitative"}
+            if f.date_min:
+                spec["min"] = f"#{f.date_min}#"
+            if f.date_max:
+                spec["max"] = f"#{f.date_max}#"
+            if len(spec) > 2:  # at least one bound — otherwise it's a no-op, skip
+                twilize_filters.append(spec)
+        elif op == "year":
+            # Year → quantitative date range over the full calendar year. Defaults
+            # to the current year (not a hardcoded 2024) when the LLM omits a value.
+            val = int(f.value) if f.value is not None else date.today().year
+            twilize_filters.append({
+                "column": field,
+                "type": "quantitative",
+                "min": f"#{val}-01-01#",
+                "max": f"#{val}-12-31#",
+            })
+        elif op in ("quarter", "month"):
+            # FIX-048: month/quarter no longer hardcode year=2024 (which silently
+            # returned the wrong year's data or nothing). A bare "Q1"/"June" has no
+            # year, so filter on the DATE PART — QUARTER()/MONTH() — which is
+            # unambiguous and matches all years. twilize parses these date-part
+            # expressions into [qr:field:ok] / [mn:field:ok] discrete instances.
+            part = int(f.value) if f.value is not None else 1
+            fn = "QUARTER" if op == "quarter" else "MONTH"
+            twilize_filters.append({
+                "column": f"{fn}({field})",
+                "values": [str(part)],
+            })
+        elif op in ("last_n_days", "last_n_months"):
+            # FIX-049: was a no-op (values:[] → "show all"). Emit a concrete
+            # quantitative date range ending today so the data is actually
+            # restricted. (A true auto-updating relative-date filter is a v1
+            # follow-up; a concrete window already guarantees the data changes.)
+            n = int(f.value) if f.value is not None else (30 if op == "last_n_days" else 6)
+            today = date.today()
+            start = today - timedelta(days=n) if op == "last_n_days" else _subtract_months(today, n)
+            twilize_filters.append({
+                "column": field,
+                "type": "quantitative",
+                "min": f"#{start.isoformat()}#",
+                "max": f"#{today.isoformat()}#",
             })
         elif op == "not_null":
+            # Placeholder categorical filter; rewritten to a real "exclude null"
+            # filter post-save by _apply_not_null_filters (FIX-050). twilize has no
+            # native non-null filter, and an empty categorical is a no-op on its own.
             twilize_filters.append({
                 "column": field,
                 "values": [],
             })
 
     return twilize_filters if twilize_filters else None
+
+
+def _subtract_months(d: date, months: int) -> date:
+    """Return the date `months` months before `d` (clamping the day to month length)."""
+    total = (d.year * 12 + (d.month - 1)) - months
+    year, month = divmod(total, 12)
+    month += 1
+    # clamp day (e.g. Mar 31 - 1 month → Feb 28/29)
+    for day in (d.day, 30, 29, 28):
+        try:
+            return date(year, month, day)
+        except ValueError:
+            continue
+    return date(year, month, 28)
 
 
 def _show_filter_cards(ed, viz, metadata=None):
@@ -560,11 +613,15 @@ def _filter_cross_datasource_calc_fields(
 def _inject_calculated_fields(ed: TWBEditor, viz: VizIntent) -> None:
     """Add calculated fields to the datasource using twilize's native API."""
     for cf in (viz.calculated_fields or []):
+        datatype = _normalize_calc_datatype(cf.datatype)
+        role = (cf.role or "measure").strip().lower() or "measure"
+        if datatype == "boolean":
+            role = "dimension"
         ed.add_calculated_field(
             field_name=cf.name,
             formula=cf.formula,
-            datatype=_normalize_calc_datatype(cf.datatype),
-            role=(cf.role or "measure").strip().lower() or "measure",
+            datatype=datatype,
+            role=role,
         )
 
 
@@ -702,11 +759,197 @@ def _detect_linking_fields(schema_a, schema_b) -> list[str]:
     return [f.name for f in schema_a.fields if f.name.lower().strip() in names_b]
 
 
+# Aggregations that cannot be decomposed into stacked per-linking-value
+# segments: a blend always computes at the linking-field granularity
+# (FIX-062, measured), so a "bar per category" is really a STACK of
+# per-linking-value segments — fine for SUM/COUNT (segments add up to the
+# true total), wrong for these (averages/minima don't add).
+_NON_ADDITIVE_AGGS = {"AVG", "MIN", "MAX", "MEDIAN"}
+# Viz types whose value slot is a single aggregated pill the TOTAL wrap supports.
+_TOTAL_WRAP_VIZ_TYPES = {"bar_chart", "line_chart", "area", "pie", "treemap", "text"}
+
+
+def _wrap_nonadditive_blend_measure(
+    viz: VizIntent,
+    secondary_metadata: DataSourceMetadata | None,
+    linking_fields: list[str] | None,
+) -> tuple[VizIntent, str | None]:
+    """FIX-063: blend + non-additive aggregation grouped by a secondary-owned
+    dimension → wrap the measure in ``TOTAL(<agg>([measure]))``.
+
+    ``TOTAL`` re-aggregates the category's underlying rows, so every
+    per-linking-value segment carries the TRUE category-level value (a
+    trip-weighted average, not a sum of per-vehicle averages); the post-save
+    ``_apply_blend_total_table_calc`` then sets the compute-using (along the
+    linking field) and turns mark stacking off so the identical segments
+    overlap into what reads as ONE mark per category.
+
+    Fires only when: the aggregation is non-additive, at least one shelf
+    dimension is secondary-owned (the cross-granularity case), and the
+    measure is NOT secondary-owned — a calc formula cannot reference another
+    datasource's field (FIX-044), so a secondary-owned measure keeps the
+    honest per-linking-value rendering instead.
+
+    Returns the (possibly rewritten) viz and the calc field name (None = not
+    applied).
+    """
+    agg = (viz.aggregation or "SUM").upper()
+    if agg not in _NON_ADDITIVE_AGGS or viz.viz_type not in _TOTAL_WRAP_VIZ_TYPES:
+        return viz, None
+    if not (viz.y_field and secondary_metadata and secondary_metadata.fields
+            and linking_fields):
+        return viz, None
+
+    linking_lower = {f.lower() for f in linking_fields}
+    sec_index = {f.name.lower(): f for f in secondary_metadata.fields}
+
+    cross_dim = any(
+        cap and cap.lower() in sec_index
+        and cap.lower() not in linking_lower
+        and sec_index[cap.lower()].role == "dimension"
+        for cap in (viz.x_field, viz.color_field)
+    )
+    if not cross_dim:
+        return viz, None
+    if viz.y_field.lower() in sec_index:
+        return viz, None  # secondary-owned measure — formula can't cross DSes
+
+    calc_name = f"{viz.y_field} ({agg})"
+    if any(cf.name == calc_name for cf in (viz.calculated_fields or [])):
+        return viz, calc_name  # already wrapped (idempotent re-entry)
+    calc = CalculatedField(
+        name=calc_name,
+        formula=f"TOTAL({agg}([{viz.y_field}]))",
+        datatype="real",
+        role="measure",
+    )
+    return viz.model_copy(update={
+        "y_field": calc_name,
+        "calculated_fields": list(viz.calculated_fields or []) + [calc],
+    }), calc_name
+
+
+def _apply_blend_total_table_calc(
+    twb_path: str,
+    calc_name: str,
+    linking_fields: list[str],
+    primary_metadata: DataSourceMetadata | None,
+    secondary_metadata: DataSourceMetadata | None,
+) -> None:
+    """Post-save (FIX-063): finish the TOTAL(<agg>) wrap on the LAST worksheet.
+
+    1. The calc pill's ``<column-instance derivation='User'>`` gets
+       ``<table-calc ordering-field='[<ds>].[none:<link>:nk]'
+       ordering-type='Field'/>`` — "compute using the linking field", i.e.
+       partition by every other dimension in the view (the category axis).
+       XML shape reverse-engineered from the production workbook
+       ``Suivi Quotidien Test 07_04 (6).twb``.
+    2. ``<breakdown value='off'/>`` in every pane's ``<view>`` — mark
+       stacking in workbook XML is the pane-view ``breakdown`` element
+       (``StackingMode-ST`` ∈ off/on/auto per Tableau's official
+       ``twb_2026.2.0.xsd``; twilize emits ``auto``). ``off`` makes the
+       identical per-linking-value segments overlap into a single visible
+       mark instead of stacking to N × value.
+    """
+    content = Path(twb_path).read_bytes()
+    root = etree.fromstring(content)
+
+    worksheets = root.findall(".//worksheets/worksheet")
+    if not worksheets:
+        return
+    ws = worksheets[-1]
+
+    # Resolve the calc's XML column id ([Calculation_xxx]) via its caption.
+    calc_id = None
+    for col in root.findall(".//datasources/datasource/column"):
+        if col.get("caption") == calc_name and col.find("calculation") is not None:
+            calc_id = col.get("name")
+            break
+    if not calc_id:
+        return
+
+    # The compute-using reference: prefer the exact LOD ref FIX-062 injected
+    # (it is guaranteed to exist in this worksheet); fall back to the linking
+    # instance declared in the dep blocks.
+    link_physicals = [
+        _physical_field_name(f, primary_metadata, secondary_metadata)
+        for f in (linking_fields or [])
+    ]
+    ordering_ref = None
+    for lod in ws.findall(".//panes/pane/encodings/lod"):
+        ref = lod.get("column", "")
+        if any(f":{p}:" in ref for p in link_physicals):
+            ordering_ref = ref
+            break
+    if ordering_ref is None:
+        for dep in ws.findall(".//datasource-dependencies"):
+            ds_name = dep.get("datasource", "")
+            for ci in dep.findall("column-instance"):
+                nm = ci.get("name", "")
+                if any(nm == f"[none:{p}:nk]" for p in link_physicals):
+                    ordering_ref = f"[{ds_name}].{nm}"
+                    break
+            if ordering_ref:
+                break
+    if ordering_ref is None:
+        return
+
+    changed = False
+    for ci in ws.findall(".//datasource-dependencies/column-instance"):
+        if ci.get("column") == calc_id and ci.get("derivation") == "User":
+            if ci.find("table-calc") is None:
+                etree.SubElement(ci, "table-calc", attrib={
+                    "ordering-field": ordering_ref,
+                    "ordering-type": "Field",
+                })
+                changed = True
+
+    # Stack marks off — the pane-view <breakdown> element (NOT a style rule;
+    # a <style-rule element='mark'><format attr='stack-marks'/> is silently
+    # ignored — measured: the bars kept stacking to N × value).
+    for pane in ws.findall(".//panes/pane"):
+        pview = pane.find("view")
+        if pview is None:
+            pview = etree.Element("view")
+            pane.insert(0, pview)
+        breakdown = pview.find("breakdown")
+        if breakdown is None:
+            breakdown = etree.SubElement(pview, "breakdown")
+        if breakdown.get("value") != "off":
+            breakdown.set("value", "off")
+            changed = True
+
+    if changed:
+        Path(twb_path).write_bytes(
+            etree.tostring(root, xml_declaration=True, encoding="UTF-8"))
+
+
+def _physical_field_name(caption: str, *schemas: DataSourceMetadata | None) -> str:
+    """Resolve a field caption to its physical/binding name (FIX-002 convention).
+
+    Published (sqlproxy) datasources bind references by the physical name
+    (``FieldInfo.local_name``), never the GraphQL caption. Searches the given
+    schemas in order (first match wins) and falls back to the caption itself
+    when no schema knows the field — for never-renamed fields the two are
+    identical, so the fallback is safe.
+    """
+    low = caption.lower()
+    for schema in schemas:
+        if not schema or not schema.fields:
+            continue
+        for f in schema.fields:
+            if f.name.lower() == low or (f.local_name or "").lower() == low:
+                return f.local_name or f.name
+    return caption
+
+
 def _inject_datasource_relationships(
     workbook_root,
     primary_ds_name: str,
     secondary_ds_name: str,
     linking_fields: list[str],
+    primary_metadata: DataSourceMetadata | None = None,
+    secondary_metadata: DataSourceMetadata | None = None,
 ) -> None:
     """Inject (or augment) the workbook-level <datasource-relationships> block that
     declares the blend link between two published datasources.
@@ -722,6 +965,18 @@ def _inject_datasource_relationships(
     action."). The deprecated <blended-columns>/<blended-link> per-worksheet
     pattern we used before is NOT how Tableau emits blends today; it leaves the
     relationship undefined and produces the 500000.
+
+    FIX-061: the linking columns MUST be declared by their PHYSICAL name
+    (``local_name``, e.g. ``vehicle_id``), not the GraphQL caption
+    (``Vehicle Id``) — same rule as every shelf reference (FIX-002). A
+    caption-named column doesn't exist in either published datasource, so
+    Tableau shows it as a phantom red-``!`` duplicate in the data pane and the
+    declared <column-mapping> links two phantoms: the REAL linking field in
+    the view (``[none:vehicle_id:nk]``, on Detail via FIX-043) is never
+    mapped, the blend stays broken, and a secondary-DS filter silently stops
+    filtering. ``primary_metadata`` / ``secondary_metadata`` provide the
+    caption→physical lookup per side; stale caption-form entries left by
+    earlier turns are purged so re-published session workbooks heal.
 
     Names use `federated.xxx` here — `_patch_sqlproxy_names()` rewrites them to
     `sqlproxy.xxx` post-save so they match the published-datasource convention.
@@ -741,37 +996,71 @@ def _inject_datasource_relationships(
         if datasources_elem is not None:
             datasources_elem.addnext(rels)
 
+    # caption → (physical-in-primary, physical-in-secondary)
+    physicals: dict[str, tuple[str, str]] = {
+        field: (
+            _physical_field_name(field, primary_metadata, secondary_metadata),
+            _physical_field_name(field, secondary_metadata, primary_metadata),
+        )
+        for field in linking_fields
+    }
+
+    def _purge_stale_caption_refs(caption: str) -> None:
+        # FIX-061 healing: earlier turns injected the linking field by its
+        # caption — a column that doesn't exist in the published datasource.
+        # Remove those phantom declarations (and their mappings) so an
+        # accumulated session workbook recovers on its next republish.
+        stale_col = f"[{caption}]"
+        stale_inst = f"[none:{caption}:nk]"
+        for dep in rels.findall("datasource-dependencies"):
+            for col in list(dep.findall("column")):
+                if col.get("name") == stale_col:
+                    dep.remove(col)
+            for ci in list(dep.findall("column-instance")):
+                if ci.get("name") == stale_inst:
+                    dep.remove(ci)
+        for rel in rels.findall("datasource-relationship"):
+            mapping_el = rel.find("column-mapping")
+            if mapping_el is None:
+                continue
+            for m in list(mapping_el.findall("map")):
+                if stale_inst in m.get("key", "") or stale_inst in m.get("value", ""):
+                    mapping_el.remove(m)
+
     def _ensure_dependencies_block(ds_name: str):
         for dep in rels.findall("datasource-dependencies"):
             if dep.get("datasource") == ds_name:
                 return dep
         return _etree.SubElement(rels, "datasource-dependencies", datasource=ds_name)
 
-    def _ensure_field_in_dependencies(dep_block, field: str):
-        bracketed = f"[{field}]"
-        for col in dep_block.findall("column"):
-            if col.get("name") == bracketed:
-                return
-        _etree.SubElement(dep_block, "column", attrib={
-            "caption": field,
-            "datatype": "string",
-            "name": bracketed,
-            "role": "dimension",
-            "type": "nominal",
-        })
-        _etree.SubElement(dep_block, "column-instance", attrib={
-            "column": bracketed,
-            "derivation": "None",
-            "name": f"[none:{field}:nk]",
-            "pivot": "key",
-            "type": "nominal",
-        })
+    def _ensure_field_in_dependencies(dep_block, caption: str, physical: str):
+        bracketed = f"[{physical}]"
+        if not any(col.get("name") == bracketed for col in dep_block.findall("column")):
+            _etree.SubElement(dep_block, "column", attrib={
+                "caption": caption,
+                "datatype": "string",
+                "name": bracketed,
+                "role": "dimension",
+                "type": "nominal",
+            })
+        inst_name = f"[none:{physical}:nk]"
+        if not any(ci.get("name") == inst_name for ci in dep_block.findall("column-instance")):
+            _etree.SubElement(dep_block, "column-instance", attrib={
+                "column": bracketed,
+                "derivation": "None",
+                "name": inst_name,
+                "pivot": "key",
+                "type": "nominal",
+            })
 
     primary_dep = _ensure_dependencies_block(primary_ds_name)
     secondary_dep = _ensure_dependencies_block(secondary_ds_name)
     for field in linking_fields:
-        _ensure_field_in_dependencies(primary_dep, field)
-        _ensure_field_in_dependencies(secondary_dep, field)
+        prim_physical, sec_physical = physicals[field]
+        if prim_physical != field or sec_physical != field:
+            _purge_stale_caption_refs(field)
+        _ensure_field_in_dependencies(primary_dep, field, prim_physical)
+        _ensure_field_in_dependencies(secondary_dep, field, sec_physical)
 
     existing_rel = None
     for rel in rels.findall("datasource-relationship"):
@@ -791,18 +1080,21 @@ def _inject_datasource_relationships(
 
     existing_keys = {m.get("key") for m in mapping.findall("map")}
     for field in linking_fields:
-        key = f"[{primary_ds_name}].[none:{field}:nk]"
+        prim_physical, sec_physical = physicals[field]
+        key = f"[{primary_ds_name}].[none:{prim_physical}:nk]"
         if key in existing_keys:
             continue
         _etree.SubElement(mapping, "map", attrib={
             "key": key,
-            "value": f"[{secondary_ds_name}].[none:{field}:nk]",
+            "value": f"[{secondary_ds_name}].[none:{sec_physical}:nk]",
         })
 
 
 def _apply_blend_datasources(ed: TWBEditor, primary_name: str, primary_content_url: str,
                               secondary_name: str, secondary_content_url: str,
-                              linking_fields: list[str]) -> tuple[str, str]:
+                              linking_fields: list[str],
+                              primary_metadata: DataSourceMetadata | None = None,
+                              secondary_metadata: DataSourceMetadata | None = None) -> tuple[str, str]:
     """Wire TWBEditor to two published datasources with blending.
 
     1. Primary datasource via the standard `_apply_server_datasource` path.
@@ -861,6 +1153,8 @@ def _apply_blend_datasources(ed: TWBEditor, primary_name: str, primary_content_u
 
     _inject_datasource_relationships(
         workbook, primary_ds_name, secondary_ds_name, linking_fields,
+        primary_metadata=primary_metadata,
+        secondary_metadata=secondary_metadata,
     )
 
     return primary_ds_name, secondary_ds_name
@@ -874,6 +1168,7 @@ def _rewire_worksheet_for_blend(
     secondary_caption: str,
     secondary_metadata: DataSourceMetadata,
     linking_fields: list[str] | None,
+    primary_metadata: DataSourceMetadata | None = None,
 ) -> None:
     """After ``_configure_worksheet`` emits a single-DS chart that puts every
     field under the primary's ``<datasource-dependencies>`` block, surgically
@@ -1031,23 +1326,12 @@ def _rewire_worksheet_for_blend(
         if secondary_dep is None:
             secondary_dep = _insert_secondary_dep()
 
-        def _physical_for(name: str, schema: DataSourceMetadata | None) -> str:
-            if not schema:
-                return name
-            for f in schema.fields:
-                if f.name.lower() == name.lower():
-                    return f.local_name or f.name
-            return name
-
-        # Build a primary schema lookup so the linking physical name matches
-        # whatever the primary stores (rare but the caption→physical mapping
-        # can differ between DSes).
+        # Resolve each side's physical name from its OWN schema (FIX-061) —
+        # the caption→physical mapping can differ between DSes, and the
+        # published datasource only resolves the physical form (FIX-002).
         for link_cap in linking_fields:
-            sec_physical = _physical_for(link_cap, secondary_metadata)
-            # On the primary side we don't have primary_metadata here, so use
-            # the secondary's physical name as a best guess — they share the
-            # same caption, so the physical names are almost always identical.
-            prim_physical = sec_physical
+            sec_physical = _physical_field_name(link_cap, secondary_metadata, primary_metadata)
+            prim_physical = _physical_field_name(link_cap, primary_metadata, secondary_metadata)
             for dep, physical in ((primary_dep, prim_physical), (secondary_dep, sec_physical)):
                 bracketed = f"[{physical}]"
                 already_has_col = any(
@@ -1082,13 +1366,27 @@ def _rewire_worksheet_for_blend(
         # primary→secondary (primary drives the aggregation, secondary
         # contributes the dimension via the link).
         #
-        # SKIP the LOD injection when the LLM has already placed the linking
-        # field on ANY active shelf (cols / rows / color / size / label / lod
-        # / tooltip / etc.). In those cases the blend is already engaged
-        # through the LLM's own choice and adding it on LOD too would
-        # duplicate the field reference. The check is on the instance suffix
-        # ":<physical>:" so it matches any aggregation form (none, count,
-        # countd, ...) and either DS prefix (primary / secondary).
+        # Placement policy for the linking field (FIX-062, MEASURED 2026-07-08):
+        # the Detail LOD is injected whenever the worksheet uses ANY secondary
+        # field — dimension, filter, OR measure. A "cleaner" variant that
+        # skipped the LOD when the secondary contributed only measures (hoping
+        # Tableau would re-aggregate the blended measure per primary category)
+        # was CONTRADICTED on the real Server: without the linking field in
+        # the view the blend never joins, and every category silently shows
+        # the GLOBAL aggregate (harness `blend_secondary_measure_avg`:
+        # 'single repeated value 241.95 — measure not joined per brand').
+        # Do NOT re-attempt — a chart that looks clean but shows the same
+        # wrong number everywhere is the worst failure mode. The per-linking-
+        # value mark granularity this forces is a Tableau blending constraint,
+        # not a placement bug.
+        #
+        # The only situational exception: the LLM already placed the linking
+        # field on an active shelf (cols / rows / color / size / label / lod /
+        # tooltip — the user asked for a per-link breakdown) → skip, the blend
+        # is engaged through the LLM's own choice and adding it on LOD too
+        # would duplicate the field reference. The check is on the instance
+        # suffix ":<physical>:" so it matches any aggregation form (none,
+        # count, countd, ...) and either DS prefix (primary / secondary).
         panes = worksheet.findall(".//table/panes/pane")
         active_refs: list[str] = []
         for shelf_name in ("cols", "rows"):
@@ -1108,7 +1406,9 @@ def _rewire_worksheet_for_blend(
             if encodings is None:
                 encodings = _etree.SubElement(pane, "encodings")
             for link_cap in linking_fields:
-                physical = _physical_for(link_cap, secondary_metadata)
+                # The LOD ref binds to the PRIMARY's instance, so resolve the
+                # physical name against the primary schema first (FIX-061).
+                physical = _physical_field_name(link_cap, primary_metadata, secondary_metadata)
                 inst_suffix = f":{physical}:"
                 if any(inst_suffix in ref for ref in active_refs):
                     continue  # LLM already placed it; blend engaged
@@ -1191,6 +1491,45 @@ def _configure_worksheet(ed: TWBEditor, viz: VizIntent) -> None:
         ed.configure_chart(worksheet_name=worksheet_name, mark_type=mark_type, **kwargs)
 
 
+def _inject_filter_slices(twb_path: str) -> None:
+    """Post-save: add missing <slices> entries so filters actually restrict query results (FIX-051).
+
+    Tableau needs a <slices><column>ref</column></slices> block in each worksheet's
+    <view> for every active <filter>. Without it the filter card shows up in the UI
+    but the filter predicate is never sent to the datasource — data is unfiltered.
+    twilize emits the <filter> element but omits <slices>, so this step injects it.
+    """
+    content = Path(twb_path).read_bytes()
+    root = etree.fromstring(content)
+    changed = False
+
+    for view in root.iter("view"):
+        filters = view.findall("filter")
+        if not filters:
+            continue
+        filter_cols = [f.get("column") for f in filters if f.get("column")]
+        if not filter_cols:
+            continue
+
+        slices = view.find("slices")
+        if slices is None:
+            slices = etree.SubElement(view, "slices")
+            changed = True
+
+        existing = {c.text for c in slices.findall("column") if c.text}
+        for col_ref in filter_cols:
+            if col_ref not in existing:
+                col_elem = etree.SubElement(slices, "column")
+                col_elem.text = col_ref
+                existing.add(col_ref)
+                changed = True
+
+    if changed:
+        Path(twb_path).write_bytes(
+            etree.tostring(root, xml_declaration=True, encoding="UTF-8")
+        )
+
+
 def _patch_sqlproxy_names(twb_path: str) -> None:
     """Post-save: rename all 'federated.xxx' references to 'sqlproxy.xxx' in the .twb.
 
@@ -1262,23 +1601,401 @@ def _fix_quantitative_date_instances(twb_path: str) -> None:
     still ends in ``:ok]``, then rename that instance (and every reference to it —
     filters, rows, cols, encodings) to ``:qk]`` so the key suffix matches the type.
     Mirrors twilize's own ``:nk]`` → ``:qk]`` logic in charts/builder_base.py.
+
+    FIX-046 — the rename MUST be scoped per worksheet. A file-wide text replace
+    (the previous implementation) corrupts a *different* worksheet that legitimately
+    uses the same date field as an ORDINAL continuous-date axis (``[none:Trip Date:ok]``
+    on a line/area/combo sheet). When a later turn adds a quantitative date *filter*
+    on a second sheet, the global replace renamed BOTH sheets' instances to ``:qk]`` —
+    leaving the first sheet's instance named ``:qk]`` while still typed ``ordinal``.
+    Two same-named instances with conflicting types ⇒ Tableau's native parser rejects
+    the workbook at publish ("worksheet … could not be parsed; the workbook may be
+    malformed"). Scoping the rename to the worksheet (and its matching ``<window>``)
+    that actually owns the quantitative instance keeps every other sheet's ordinal
+    date axis intact.
     """
     content = Path(twb_path).read_text(encoding="utf-8")
     root = etree.fromstring(content.encode("utf-8"))
 
-    renames: dict[str, str] = {}
-    for ci in root.iter("column-instance"):
-        if ci.get("type") == "quantitative":
-            name = ci.get("name") or ""
-            if name.endswith(":ok]"):
-                renames[name] = name[:-4] + ":qk]"
+    def _apply_renames(subtree, renames: dict[str, str]) -> bool:
+        """Rewrite instance-name occurrences in attribute values + element text,
+        scoped to a single subtree (one worksheet + its window)."""
+        changed = False
+        for el in subtree.iter():
+            for attr, val in list(el.attrib.items()):
+                new = val
+                for old, rep in renames.items():
+                    if old in new:
+                        new = new.replace(old, rep)
+                if new != val:
+                    el.set(attr, new)
+                    changed = True
+            for textattr in ("text", "tail"):
+                cur = getattr(el, textattr)
+                if not cur:
+                    continue
+                new = cur
+                for old, rep in renames.items():
+                    if old in new:
+                        new = new.replace(old, rep)
+                if new != cur:
+                    setattr(el, textattr, new)
+                    changed = True
+        return changed
 
-    if not renames:
+    # Map worksheet name → matching <window> so a worksheet's filter-card refs
+    # (under <windows>/<window>/<cards>) get renamed in lockstep with the sheet.
+    windows_by_name = {w.get("name"): w for w in root.iter("window") if w.get("name")}
+
+    any_changed = False
+    for ws in root.iter("worksheet"):
+        renames: dict[str, str] = {}
+        for ci in ws.iter("column-instance"):
+            if ci.get("type") == "quantitative":
+                name = ci.get("name") or ""
+                if name.endswith(":ok]"):
+                    renames[name] = name[:-4] + ":qk]"
+        if not renames:
+            continue
+        any_changed |= _apply_renames(ws, renames)
+        win = windows_by_name.get(ws.get("name"))
+        if win is not None:
+            any_changed |= _apply_renames(win, renames)
+
+    if any_changed:
+        Path(twb_path).write_bytes(
+            etree.tostring(root, xml_declaration=True, encoding="UTF-8")
+        )
+
+
+def _apply_not_null_filters(twb_path: str, viz: VizIntent, metadata: DataSourceMetadata | None) -> None:
+    """Post-save: turn each ``not_null`` filter into a real "exclude null" filter.
+
+    twilize has no native non-null filter; ``_build_filters_for_twilize`` emits a
+    placeholder empty categorical filter (``function="level-members"`` = all members,
+    a no-op). This pass rewrites that placeholder to ``except(all-members, null-member)``
+    — i.e. every value EXCEPT null — which is what the user asked for (FIX-050).
+    Runs after the sqlproxy/physical-name passes so the filter column is already in
+    its final ``[sqlproxy.X].[none:<physical>:nk]`` form.
+    """
+    nn_fields = [f.field for f in (viz.filters or []) if f.op == "not_null"]
+    if not nn_fields:
         return
 
-    for old, new in renames.items():
-        content = content.replace(old, new)
-    Path(twb_path).write_text(content, encoding="utf-8")
+    # Resolve each requested field to its physical name (the sqlproxy binding key).
+    name_to_phys: dict[str, str] = {}
+    if metadata and metadata.fields:
+        for fld in metadata.fields:
+            name_to_phys[fld.name.lower()] = (fld.local_name or fld.name)
+    tokens = {name_to_phys.get(fn.lower(), fn).lower() for fn in nn_fields}
+    tokens |= {fn.lower() for fn in nn_fields}  # also match by caption, just in case
+
+    content = Path(twb_path).read_bytes()
+    root = etree.fromstring(content)
+    USER_NS = "{http://www.tableausoftware.com/xml/user}"
+    changed = False
+
+    for filt in root.iter("filter"):
+        if filt.get("class") != "categorical":
+            continue
+        col = filt.get("column") or ""
+        m = re.search(r":([^:\]]+):[a-z]k\]$", col)
+        if not m or m.group(1).lower() not in tokens:
+            continue
+        # instance ref without the [sqlproxy.X]. prefix → the groupfilter <level>
+        level = "[" + col.split("].[", 1)[-1] if "].[" in col else col
+        for child in list(filt):
+            filt.remove(child)
+        gf_except = etree.SubElement(filt, "groupfilter")
+        gf_except.set("function", "except")
+        gf_except.set(f"{USER_NS}ui-marker", "filter")
+        gf_all = etree.SubElement(gf_except, "groupfilter")
+        gf_all.set("function", "level-members")
+        gf_all.set("level", level)
+        gf_null = etree.SubElement(gf_except, "groupfilter")
+        gf_null.set("function", "member")
+        gf_null.set("level", level)
+        gf_null.set("member", "%null%")
+        changed = True
+
+    if changed:
+        Path(twb_path).write_bytes(
+            etree.tostring(root, xml_declaration=True, encoding="UTF-8")
+        )
+
+
+def _apply_exclude_filters(twb_path: str, viz: VizIntent, metadata: DataSourceMetadata | None) -> None:
+    """Post-save: turn each ``neq`` / ``not_in`` filter into a real Tableau
+    exclude filter (FIX-055).
+
+    twilize has no native exclusion; ``_build_filters_for_twilize`` emits the same
+    empty categorical placeholder as ``not_null``. This pass rewrites it to
+    ``except(all-members, member…)`` — one excluded member directly, several
+    wrapped in a ``union`` — which is the exact groupfilter shape Tableau itself
+    writes for an "exclude" categorical filter. Same machinery as FIX-050
+    (``_apply_not_null_filters``), generalized from the ``%null%`` member to the
+    user's excluded values. String members are quoted the way twilize quotes
+    include-members (``"value"``); pure-numeric members stay unquoted (Tableau
+    rejects quoted numerics on non-string levels — same lesson as FIX-048).
+    Runs after the sqlproxy/physical-name passes so the filter column is already
+    in its final ``[sqlproxy.X].[none:<physical>:nk]`` form.
+    """
+    excludes: dict[str, list] = {}
+    for f in (viz.filters or []):
+        if f.op == "neq" and f.value is not None:
+            excludes.setdefault(f.field.lower(), []).append(f.value)
+        elif f.op == "not_in" and f.values:
+            excludes.setdefault(f.field.lower(), []).extend(f.values)
+    if not excludes:
+        return
+
+    # Resolve each requested field to its physical name (the sqlproxy binding key).
+    name_to_phys: dict[str, str] = {}
+    if metadata and metadata.fields:
+        for fld in metadata.fields:
+            name_to_phys[fld.name.lower()] = (fld.local_name or fld.name)
+    token_to_values: dict[str, list] = {}
+    for fname, vals in excludes.items():
+        token_to_values[name_to_phys.get(fname, fname).lower()] = vals
+        token_to_values[fname] = vals  # also match by caption, just in case
+
+    def _member_attr(v) -> str:
+        s = str(v).lower() if isinstance(v, bool) else str(v)
+        return s if re.fullmatch(r"-?\d+(\.\d+)?", s) else f'"{s}"'
+
+    content = Path(twb_path).read_bytes()
+    root = etree.fromstring(content)
+    USER_NS = "{http://www.tableausoftware.com/xml/user}"
+    changed = False
+
+    for filt in root.iter("filter"):
+        if filt.get("class") != "categorical":
+            continue
+        col = filt.get("column") or ""
+        m = re.search(r":([^:\]]+):[a-z]k\]$", col)
+        if not m or m.group(1).lower() not in token_to_values:
+            continue
+        values = token_to_values[m.group(1).lower()]
+        level = "[" + col.split("].[", 1)[-1] if "].[" in col else col
+        for child in list(filt):
+            filt.remove(child)
+        gf_except = etree.SubElement(filt, "groupfilter")
+        gf_except.set("function", "except")
+        gf_except.set(f"{USER_NS}ui-domain", "database")
+        gf_except.set(f"{USER_NS}ui-enumeration", "exclusive")
+        gf_except.set(f"{USER_NS}ui-marker", "enumerate")
+        gf_all = etree.SubElement(gf_except, "groupfilter")
+        gf_all.set("function", "level-members")
+        gf_all.set("level", level)
+        if len(values) == 1:
+            gf_mem = etree.SubElement(gf_except, "groupfilter")
+            gf_mem.set("function", "member")
+            gf_mem.set("level", level)
+            gf_mem.set("member", _member_attr(values[0]))
+        else:
+            gf_union = etree.SubElement(gf_except, "groupfilter")
+            gf_union.set("function", "union")
+            for v in values:
+                gf_mem = etree.SubElement(gf_union, "groupfilter")
+                gf_mem.set("function", "member")
+                gf_mem.set("level", level)
+                gf_mem.set("member", _member_attr(v))
+        changed = True
+
+    if changed:
+        Path(twb_path).write_bytes(
+            etree.tostring(root, xml_declaration=True, encoding="UTF-8")
+        )
+
+
+def _apply_relative_date_filters(twb_path: str, viz: VizIntent, metadata: DataSourceMetadata | None) -> None:
+    """Post-save: upgrade ``last_n_days`` / ``last_n_months`` from the FROZEN
+    concrete range (FIX-049) to a LIVE Tableau relative-date filter (FIX-059).
+
+    The concrete range guaranteed the filter restricted data but was computed at
+    generation time — a "30 derniers jours" chart went stale the next day. This
+    pass rewrites the quantitative range filter that _build_filters_for_twilize
+    emitted into ``<filter class='relative-date' first-period='-N' last-period='0'
+    period-type='day|month' include-future='false' include-null='false'>`` — the
+    documented Tableau shape — so the window re-evaluates at view time.
+    The concrete range stays the built-in fallback: if this pass finds nothing
+    to rewrite, the workbook still ships with the (frozen but correct) range.
+    """
+    rel: dict[str, tuple[str, int]] = {}
+    for f in (viz.filters or []):
+        if f.op in ("last_n_days", "last_n_months"):
+            n = int(f.value) if f.value is not None else (30 if f.op == "last_n_days" else 6)
+            rel[f.field.lower()] = ("day" if f.op == "last_n_days" else "month", n)
+    if not rel:
+        return
+
+    name_to_phys: dict[str, str] = {}
+    if metadata and metadata.fields:
+        for fld in metadata.fields:
+            name_to_phys[fld.name.lower()] = (fld.local_name or fld.name)
+    tokens: dict[str, tuple[str, int]] = {}
+    for fname, spec in rel.items():
+        tokens[name_to_phys.get(fname, fname).lower()] = spec
+        tokens[fname] = spec
+
+    content = Path(twb_path).read_bytes()
+    root = etree.fromstring(content)
+    changed = False
+    for filt in root.iter("filter"):
+        if filt.get("class") != "quantitative":
+            continue
+        col = filt.get("column") or ""
+        m = re.search(r":([^:\]]+):[a-z]k\]$", col)
+        if not m or m.group(1).lower() not in tokens:
+            continue
+        period, n = tokens[m.group(1).lower()]
+        for child in list(filt):
+            filt.remove(child)
+        for attr in ("min", "max", "included-values"):
+            filt.attrib.pop(attr, None)
+        filt.set("class", "relative-date")
+        filt.set("first-period", str(-n))
+        filt.set("last-period", "0")
+        filt.set("period-type", period)
+        filt.set("include-future", "false")
+        filt.set("include-null", "false")
+        changed = True
+    if changed:
+        Path(twb_path).write_bytes(
+            etree.tostring(root, xml_declaration=True, encoding="UTF-8")
+        )
+
+
+def add_dashboard_to_workbook(twb_path: str, title: str, sheet_titles: list[str]) -> str:
+    """Inject a dashboard laying out existing worksheets in a grid (C4 —
+    "mets les 3 charts dans un dashboard").
+
+    Mirrors the structure of a real production dashboard (reverse-engineered
+    from `Suivi Quotidien Test 07_04 (6).twb`): a ``<dashboards><dashboard>``
+    block — sibling of <worksheets> — holding <style/>, <size>, and nested
+    <zones> (root layout-basic → layout-flow rows → one named zone per sheet),
+    plus a ``<window class='dashboard'>`` entry. Zone coordinates are in
+    1/1000 % of the dashboard (100000 = 100%). Replaces an existing dashboard
+    of the same name (re-running the command updates the layout).
+    Returns the dashboard name used."""
+    tree = etree.parse(twb_path)
+    root = tree.getroot()
+
+    dashboards = root.find("dashboards")
+    if dashboards is None:
+        worksheets_el = root.find("worksheets")
+        if worksheets_el is None:
+            raise ValueError("workbook has no <worksheets> block")
+        dashboards = etree.Element("dashboards")
+        worksheets_el.addnext(dashboards)
+    # Idempotent per name: drop a same-named dashboard (and its window) first.
+    for d in list(dashboards.findall("dashboard")):
+        if d.get("name") == title:
+            dashboards.remove(d)
+    windows_el = root.find("windows")
+    if windows_el is not None:
+        for w in list(windows_el.findall("window")):
+            if w.get("class") == "dashboard" and w.get("name") == title:
+                windows_el.remove(w)
+
+    dash = etree.SubElement(dashboards, "dashboard")
+    dash.set("enable-sort-zone-taborder", "true")
+    dash.set("name", title)
+    etree.SubElement(dash, "style")
+    size = etree.SubElement(dash, "size")
+    for attr, val in (("maxheight", "800"), ("maxwidth", "1000"),
+                      ("minheight", "800"), ("minwidth", "1000")):
+        size.set(attr, val)
+    zones = etree.SubElement(dash, "zones")
+
+    n = max(1, len(sheet_titles))
+    cols = 1 if n == 1 else 2
+    rows = (n + cols - 1) // cols
+    zone_id = 1
+
+    def _zone(parent, **attrs):
+        nonlocal zone_id
+        z = etree.SubElement(parent, "zone")
+        z.set("id", str(zone_id))
+        zone_id += 1
+        for k, v in attrs.items():
+            z.set(k.replace("_", "-"), str(v))
+        return z
+
+    root_zone = _zone(zones, h=100000, w=100000, x=0, y=0, **{"type_v2": "layout-basic"})
+    vflow = _zone(root_zone, h=100000, w=100000, x=0, y=0,
+                  param="vert", **{"type_v2": "layout-flow"})
+    row_h = 100000 // rows
+    first_sheet_zone_id: int | None = None
+    for r in range(rows):
+        row_sheets = sheet_titles[r * cols:(r + 1) * cols]
+        hflow = _zone(vflow, h=row_h, w=100000, x=0, y=r * row_h,
+                      param="horz", **{"type_v2": "layout-flow"})
+        col_w = 100000 // max(1, len(row_sheets))
+        for c, sheet in enumerate(row_sheets):
+            z = _zone(hflow, h=row_h, w=col_w, x=c * col_w, y=r * row_h, name=sheet)
+            if first_sheet_zone_id is None:
+                first_sheet_zone_id = int(z.get("id"))
+            zs = etree.SubElement(z, "zone-style")
+            fmt = etree.SubElement(zs, "format")
+            fmt.set("attr", "margin")
+            fmt.set("value", "4")
+
+    if windows_el is not None:
+        win = etree.SubElement(windows_el, "window")
+        win.set("class", "dashboard")
+        win.set("name", title)
+        # Tableau's native parser requires a <viewpoint> per sheet placed on the
+        # dashboard — without it publish fails with "Dashboard references sheet
+        # 'X' which has no visual representation in the workbook" (verified on
+        # the real Server). Mirrors the production workbook's shape.
+        vps = etree.SubElement(win, "viewpoints")
+        for sheet in sheet_titles:
+            vp = etree.SubElement(vps, "viewpoint")
+            vp.set("name", sheet)
+        if first_sheet_zone_id is not None:
+            active = etree.SubElement(win, "active")
+            active.set("id", str(first_sheet_zone_id))
+
+    tree.write(twb_path, xml_declaration=True, encoding="UTF-8")
+    return title
+
+
+# Tableau date-part instance prefixes (MONTH→mn, QUARTER→qr, etc.). A discrete
+# filter on one of these takes a NUMERIC member (e.g. month 6, quarter 1).
+_DATEPART_PREFIXES = ("mn", "qr", "my", "qy", "wk", "dy", "wd", "md", "mdy", "hr", "mi", "sc")
+
+
+def _fix_datepart_filter_members(twb_path: str) -> None:
+    """Post-save: unquote the member value of a discrete date-part filter.
+
+    twilize quotes every categorical member (``member="&quot;1&quot;"``). For a
+    string dimension that's correct, but for a date-part filter (MONTH/QUARTER →
+    ``[mn:field:ok]`` / ``[qr:field:ok]``) Tableau requires a NUMERIC member —
+    a quoted ``"1"`` makes Tableau reject the filter at publish ("Error parsing
+    filter for field 'QUARTER(...)', ignoring filter") and silently drop it, so
+    the data is never restricted (FIX-048). Verified on the server: bare level +
+    unquoted numeric member is the form Tableau accepts.
+    """
+    content = Path(twb_path).read_bytes()
+    root = etree.fromstring(content)
+    changed = False
+    for filt in root.iter("filter"):
+        if filt.get("class") != "categorical":
+            continue
+        col = filt.get("column") or ""
+        m = re.search(r"\.\[([a-z]+):[^:\]]+:[a-z]k\]$", col)
+        if not m or m.group(1) not in _DATEPART_PREFIXES:
+            continue
+        for gf in filt.iter("groupfilter"):
+            mem = gf.get("member")
+            if mem and len(mem) >= 2 and mem[0] == '"' and mem[-1] == '"':
+                gf.set("member", mem[1:-1])
+                changed = True
+    if changed:
+        Path(twb_path).write_bytes(
+            etree.tostring(root, xml_declaration=True, encoding="UTF-8")
+        )
 
 
 def generate_twb(
@@ -1312,6 +2029,8 @@ def generate_twb(
                 server_ds_name or "datasource", server_ds_content_url,
                 blend_secondary_name or "secondary", blend_secondary_content_url,
                 blend_linking_fields,
+                primary_metadata=metadata,
+                secondary_metadata=blend_secondary_metadata,
             )
         else:
             _apply_server_datasource(ed, server_ds_name or "datasource", server_ds_content_url)
@@ -1320,6 +2039,14 @@ def generate_twb(
     # FIX-044: drop calc fields that reference secondary-only fields before injection
     if blend_secondary_metadata:
         viz = _filter_cross_datasource_calc_fields(viz, metadata, blend_secondary_metadata)
+
+    # FIX-063: non-additive aggregation grouped by a secondary-owned dimension
+    # → TOTAL(<agg>) wrap so each per-linking-value segment carries the TRUE
+    # category value (finished post-save by _apply_blend_total_table_calc).
+    total_calc_name = None
+    if blend_secondary_metadata and blend_linking_fields:
+        viz, total_calc_name = _wrap_nonadditive_blend_measure(
+            viz, blend_secondary_metadata, blend_linking_fields)
 
     _register_fields(ed, viz, metadata)
     _inject_calculated_fields(ed, viz)
@@ -1341,6 +2068,7 @@ def generate_twb(
             secondary_caption=blend_secondary_name or "secondary",
             secondary_metadata=blend_secondary_metadata,
             linking_fields=blend_linking_fields,
+            primary_metadata=metadata,
         )
 
     settings.output_dir.mkdir(exist_ok=True)
@@ -1359,8 +2087,42 @@ def generate_twb(
         _fix_field_names_for_sqlproxy(str(out_path), metadata)
     # Repair date dimensions in quantitative range filters (:ok] → :qk])
     _fix_quantitative_date_instances(str(out_path))
+    # Ensure each filter has a matching <slices> entry so it actually restricts data
+    _inject_filter_slices(str(out_path))
+    # Unquote numeric members of discrete date-part (month/quarter) filters
+    _fix_datepart_filter_members(str(out_path))
+    # Rewrite not_null placeholders into real "exclude null" filters
+    _apply_not_null_filters(str(out_path), viz, metadata)
+    # Rewrite neq/not_in placeholders into real exclude filters (FIX-055)
+    _apply_exclude_filters(str(out_path), viz, metadata)
+    # Upgrade last_n_* frozen ranges to live relative-date filters (FIX-059)
+    _apply_relative_date_filters(str(out_path), viz, metadata)
+    # FIX-063: compute-using + stack-marks-off for the TOTAL(<agg>) blend wrap
+    if total_calc_name and blend_linking_fields:
+        _apply_blend_total_table_calc(
+            str(out_path), total_calc_name, blend_linking_fields,
+            metadata, blend_secondary_metadata)
 
     return filename, out_path
+
+
+def _deduplicate_sheet_name(twb_path: str, desired_name: str) -> str:
+    """Return a worksheet name that doesn't collide with any existing sheet (FIX-052).
+
+    Two <worksheet> elements with the same name make Tableau's native parser reject
+    the whole workbook ("worksheet … could not be parsed; the workbook may be
+    malformed"). A filtered follow-up that the LLM titles identically to the prior
+    chart would collide, so append " (2)", " (3)", … on conflict."""
+    try:
+        existing = {ws.get("name", "") for ws in etree.parse(twb_path).getroot().findall(".//worksheet")}
+    except Exception:
+        return desired_name
+    if desired_name not in existing:
+        return desired_name
+    suffix = 2
+    while f"{desired_name} ({suffix})" in existing:
+        suffix += 1
+    return f"{desired_name} ({suffix})"
 
 
 def add_sheet_to_existing(
@@ -1387,6 +2149,12 @@ def add_sheet_to_existing(
     standalone TWB and XML-merge into existing.
     """
     needs_blend = bool(blend_secondary_content_url and blend_linking_fields)
+
+    # Deduplicate worksheet name against existing sheets so Tableau never sees
+    # two worksheets with the same name (e.g. a filtered variant of a prior chart).
+    unique_name = _deduplicate_sheet_name(twb_path, viz.title)
+    if unique_name != viz.title:
+        viz = viz.model_copy(update={"title": unique_name})
 
     # Determine if this is a same-datasource or different-datasource sheet
     is_different_ds = False
@@ -1415,6 +2183,64 @@ def add_sheet_to_existing(
             twb_path, viz, metadata,
             server_ds_content_url, server_ds_name,
         )
+
+
+def list_worksheet_titles(twb_path: str) -> list[str]:
+    """Return the workbook's worksheet names in document order."""
+    try:
+        root = etree.parse(twb_path).getroot()
+    except Exception:
+        return []
+    return [w.get("name", "") for w in root.findall(".//worksheets/worksheet")]
+
+
+def delete_sheet_from_workbook(twb_path: str, sheet_title: str) -> bool:
+    """Remove ONE worksheet (and its <window>) from the workbook (C2 —
+    natural-language "supprime le chart X").
+
+    Refuses to delete the LAST worksheet — Tableau rejects a workbook without
+    any worksheet, so the caller must surface that instead. Returns True when
+    the sheet was removed."""
+    tree = etree.parse(twb_path)
+    root = tree.getroot()
+    sheets = root.findall(".//worksheets/worksheet")
+    if len(sheets) <= 1:
+        return False
+    removed = False
+    for ws in sheets:
+        if ws.get("name") == sheet_title:
+            ws.getparent().remove(ws)
+            removed = True
+    if not removed:
+        return False
+    for win in root.findall(".//windows/window"):
+        if win.get("name") == sheet_title:
+            win.getparent().remove(win)
+    tree.write(twb_path, xml_declaration=True, encoding="UTF-8")
+    return True
+
+
+def rename_sheet_in_workbook(twb_path: str, old_title: str, new_title: str) -> str | None:
+    """Rename a worksheet + its <window> (C2 — "renomme la feuille X en Y").
+
+    The new name goes through the FIX-052 dedup so two sheets never share a
+    name (Tableau's parser rejects the workbook otherwise). Returns the actual
+    new name used, or None when old_title wasn't found."""
+    unique = _deduplicate_sheet_name(twb_path, new_title)
+    tree = etree.parse(twb_path)
+    root = tree.getroot()
+    renamed = False
+    for ws in root.findall(".//worksheets/worksheet"):
+        if ws.get("name") == old_title:
+            ws.set("name", unique)
+            renamed = True
+    if not renamed:
+        return None
+    for win in root.findall(".//windows/window"):
+        if win.get("name") == old_title:
+            win.set("name", unique)
+    tree.write(twb_path, xml_declaration=True, encoding="UTF-8")
+    return unique
 
 
 def modify_sheet_in_existing(
@@ -1486,6 +2312,11 @@ def _add_sheet_same_datasource(
     _patch_sqlproxy_names(twb_path)
     _fix_field_names_for_sqlproxy(twb_path, metadata)
     _fix_quantitative_date_instances(twb_path)
+    _inject_filter_slices(twb_path)
+    _fix_datepart_filter_members(twb_path)
+    _apply_not_null_filters(twb_path, viz, metadata)
+    _apply_exclude_filters(twb_path, viz, metadata)
+    _apply_relative_date_filters(twb_path, viz, metadata)
     return twb_path
 
 
@@ -1615,6 +2446,26 @@ def _merge_new_sheet_into_workbook(
             if new_ds.get("name", "") not in existing_ds_names:
                 existing_datasources.append(new_ds)
 
+    # Step 4b: calculated-field <column> defs live INSIDE the datasource
+    # element. When Step 2.5/2.5a reuses the session's existing datasource
+    # element (same dbname → element NOT appended above), the new sheet's calc
+    # columns must be copied over, or the new worksheet references an
+    # undefined [Calculation_xxx] → red pill (FIX-063 TOTAL wrap, and any
+    # LLM calc field on a blend turn).
+    for new_ds in new_root.findall(".//datasources/datasource[@inline='true']"):
+        nm = new_ds.get("name", "")
+        if not nm or nm not in existing_ds_names:
+            continue  # element was appended whole in Step 4 (calc cols travel with it)
+        existing_el = next(
+            (d for d in existing_root.findall(".//datasources/datasource")
+             if d.get("name") == nm), None)
+        if existing_el is None:
+            continue
+        have = {c.get("name") for c in existing_el.findall("column")}
+        for col in new_ds.findall("column"):
+            if col.find("calculation") is not None and col.get("name") not in have:
+                existing_el.append(col)
+
     # Step 5: Copy the new worksheet into the existing workbook
     existing_worksheets = existing_root.find(".//worksheets")
     new_worksheet = new_root.find(".//worksheet")
@@ -1635,6 +2486,8 @@ def _merge_new_sheet_into_workbook(
             existing_root,
             unique_ds_name, new_secondary_name,
             blend_linking_fields,
+            primary_metadata=metadata,
+            secondary_metadata=blend_secondary_metadata,
         )
 
     # Step 8: Write the merged workbook
@@ -1669,10 +2522,13 @@ def generate_multi_sheet_twb(
     ed = TWBEditor("")
     if server_ds_content_url:
         if blend_secondary_content_url and blend_linking_fields:
+            # No secondary schema in this signature — the helper falls back to
+            # the primary's physical name (linking captions exist in both DSes).
             _apply_blend_datasources(
                 ed, server_ds_name or "datasource", server_ds_content_url,
                 blend_secondary_name or "secondary", blend_secondary_content_url,
                 blend_linking_fields,
+                primary_metadata=metadata,
             )
         else:
             _apply_server_datasource(ed, server_ds_name or "datasource", server_ds_content_url)
@@ -1717,6 +2573,12 @@ def generate_multi_sheet_twb(
         _patch_sqlproxy_names(str(out_path))
         _fix_field_names_for_sqlproxy(str(out_path), metadata)
     _fix_quantitative_date_instances(str(out_path))
+    _inject_filter_slices(str(out_path))
+    _fix_datepart_filter_members(str(out_path))
+    for _viz in viz_intents:
+        _apply_not_null_filters(str(out_path), _viz, metadata)
+        _apply_exclude_filters(str(out_path), _viz, metadata)
+        _apply_relative_date_filters(str(out_path), _viz, metadata)
 
     return filename, out_path
 

@@ -2,9 +2,19 @@ from schemas import DataSourceMetadata, VizIntent
 
 SYSTEM_PROMPT = """You are an expert Tableau data visualization assistant. You help users understand their data and create charts.
 
-You have two capabilities:
+You have four capabilities:
 1. TALK naturally — answer questions, explain concepts, suggest approaches, ask for clarification
 2. CREATE CHARTS — when the user wants a visualization, use the generate_chart tool
+3. ANSWER DATA QUESTIONS — when the user asks a factual question about the data expecting a NUMBER
+   ("combien de ventes au total ?", "what is the average cost?", "how many trips?") and does NOT ask
+   to see/show/visualize it, use the query_data tool: it returns the real value(s) from the
+   datasource and you answer directly in the chat. If they ask to SHOW/display it, or the question
+   needs date filtering, use generate_chart (kpi) instead.
+4. MANAGE SHEETS — when the user asks to DELETE a chart ("supprime le chart des ventes"), RENAME a
+   sheet, or UNDO the last change ("annule"), use the manage_worksheet tool. Never generate_chart
+   for these.
+5. BUILD DASHBOARDS — when the user asks to assemble existing charts into a dashboard ("mets les 3
+   charts dans un dashboard", "crée un dashboard avec tout"), use the create_dashboard tool.
 
 DATASOURCE SELECTION: If multiple datasources are available, select the one whose fields best match the question. Field matching is authoritative — never pick by name alone.
 
@@ -43,7 +53,13 @@ FIELD RULES (when using generate_chart):
 - For kpi: x_field = the measure, y_field = ""
 - For pie: x_field = slices (dimension), y_field = size (measure)
 - For heatmap: x_field = first dimension, y_field = second dimension, color_field = measure
+- For text/table with two dimensions: y_field MUST be the MEASURE shown in the cells; put the two dimensions on x_field and color_field (rows/columns). NEVER put a dimension in y_field for a table — a dimension cannot be summed.
 - If a needed metric doesn't exist, create a calculated_field with Tableau formula syntax ([Field] brackets)
+- Calculated-field patterns (substitute the ACTUAL field names):
+  margin/taux de marge → SUM([Profit])/SUM([Sales]) · avg order value/panier moyen → SUM([Sales])/COUNTD([Order ID])
+  % of total/part du total → SUM([X])/TOTAL(SUM([X])) · running total/cumul → RUNNING_SUM(SUM([X]))
+  rank/classement → RANK(SUM([X])) · YoY growth/croissance → (SUM([X])-LOOKUP(SUM([X]),-1))/ABS(LOOKUP(SUM([X]),-1))
+  vs average/vs moyenne → SUM([X])-WINDOW_AVG(SUM([X])) · per unit/par km → SUM([X])/SUM([Y]) (row-level [X]/[Y] only for per-row ratios)
 - Aggregation: monetary → SUM, entity counts → COUNT/COUNTD, ratios/averages → AVG, default → SUM
 - CROSS-DATASOURCE CALC FIELDS ARE INVALID: a calculated field formula can ONLY reference fields from the primary datasource (datasource_luid). NEVER write a formula that mixes fields from primary AND secondary datasources (e.g., [Cargo Weight Kg]/[capacity_kg] where capacity_kg is in the secondary) — Tableau rejects this with "The calculation contains errors". If a metric requires fields from both datasources, place them separately on x_field/y_field/color_field shelves; do not combine them in a calculated_field formula.
 
@@ -51,6 +67,12 @@ IMPLICIT FILTERS — extract even when not explicitly stated:
 - "rentable"/"profitable" → {field: Profit-like, op: gt, value: 0}
 - "top N" → {field: x_field, op: top_n, value: N, by: y_field}
 - Year "2024", "en 2023" → {field: date_field, op: year, value: YEAR}
+- EXCLUSION "sans X"/"exclude X"/"except X"/"hors X"/"autre que X" → {field: dim, op: not_in, values: [X]} (or op: neq, value: X for a single value). NEVER express an exclusion with eq/in — that INCLUDES the value instead of excluding it.
+- Explicit date span "de mars à juin 2025"/"from March to June 2025"/"entre le 2025-01-01 et le 2025-03-15" → {field: date_field, op: date_range, date_min: "2025-03-01", date_max: "2025-06-30"} — ISO dates YYYY-MM-DD, end date inclusive (last day of the end month when the user names months).
+- For eq/in filters on a dimension, copy the value the user wrote VERBATIM (same spelling, accents and language) — e.g. "OUest" → "Ouest", never "West". Do NOT translate or normalize dimension values; Tableau filters are case-sensitive and the value must match a real member of the data.
+
+BLEND LINKING FIELD: If the user names the field that should LINK two datasources for a blend
+("lie-les sur vehicle_id", "join on Vehicle Id"), set blend_linking_field to that field name.
 
 CONTINUITY: If previous_intent is provided and the user is modifying it (add filter, change type, sort, rename, etc.), set action="modify" and merge changes onto the previous intent.
 - Filter follow-ups ("filtré par X", "filter by Y", "only Z", "sans les W", "exclude V", "for 2024 only") → keep previous_intent.x_field / y_field / color_field unchanged and ADD the filter to the `filters` array. Never drop existing filters that the user did not ask to remove.
@@ -109,8 +131,9 @@ GENERATE_CHART_TOOL = {
                         "properties": {
                             "field": {"type": "string"},
                             "op": {"type": "string", "enum": [
-                                "eq", "in", "gt", "gte", "lt", "lte", "between",
-                                "year", "quarter", "month",
+                                "eq", "in", "neq", "not_in",
+                                "gt", "gte", "lt", "lte", "between",
+                                "year", "quarter", "month", "date_range",
                                 "last_n_days", "last_n_months",
                                 "top_n", "bottom_n", "not_null",
                             ]},
@@ -118,6 +141,8 @@ GENERATE_CHART_TOOL = {
                             "values": {"type": "array"},
                             "min": {"type": "number"},
                             "max": {"type": "number"},
+                            "date_min": {"type": "string", "description": "ISO date YYYY-MM-DD (op=date_range)"},
+                            "date_max": {"type": "string", "description": "ISO date YYYY-MM-DD (op=date_range)"},
                             "by": {"type": "string"},
                         },
                     },
@@ -167,6 +192,11 @@ GENERATE_CHART_TOOL = {
                     "description": "LUID of a secondary datasource for data blending.",
                     "default": None,
                 },
+                "blend_linking_field": {
+                    "type": ["string", "null"],
+                    "description": "Field linking the two blended datasources, when the user names it explicitly (e.g. 'join on vehicle_id').",
+                    "default": None,
+                },
                 "clarification_needed": {
                     "type": ["string", "null"],
                     "description": "Question to ask user when intent is ambiguous (use with action='clarify').",
@@ -177,7 +207,119 @@ GENERATE_CHART_TOOL = {
     },
 }
 
-TOOLS = [GENERATE_CHART_TOOL]
+QUERY_DATA_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "query_data",
+        "description": (
+            "Answer a factual data question with the ACTUAL value(s) from the datasource, "
+            "without creating a chart. Use when the user asks 'combien', 'what is the total', "
+            "'how many', 'quelle est la moyenne' and does not ask to see/visualize it. "
+            "Do NOT use for date-filtered questions (use generate_chart kpi instead)."
+        ),
+        "parameters": {
+            "type": "object",
+            "required": ["measure"],
+            "properties": {
+                "measure": {
+                    "type": "string",
+                    "description": "The measure field to aggregate (exact field name).",
+                },
+                "aggregation": {
+                    "type": "string",
+                    "enum": ["SUM", "AVG", "COUNT", "COUNTD", "MIN", "MAX", "MEDIAN"],
+                    "default": "SUM",
+                },
+                "group_by": {
+                    "type": ["string", "null"],
+                    "description": "Optional dimension to break the value down by (e.g. 'par région').",
+                    "default": None,
+                },
+                "filters": {
+                    "type": "array",
+                    "description": "Optional dimension-value filters (exact member values).",
+                    "default": [],
+                    "items": {
+                        "type": "object",
+                        "required": ["field", "values"],
+                        "properties": {
+                            "field": {"type": "string"},
+                            "values": {"type": "array", "items": {"type": "string"}},
+                            "exclude": {"type": "boolean", "default": False},
+                        },
+                    },
+                },
+                "datasource_luid": {
+                    "type": ["string", "null"],
+                    "description": "LUID of the Tableau Server datasource holding the measure.",
+                    "default": None,
+                },
+            },
+        },
+    },
+}
+
+MANAGE_WORKSHEET_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "manage_worksheet",
+        "description": (
+            "Manage the sheets of the session workbook: delete a sheet "
+            "('supprime le chart des ventes'), rename a sheet ('renomme la feuille 2 "
+            "en Coûts 2025'), or undo the last change ('annule'). "
+            "Do NOT use for creating or modifying charts — that is generate_chart."
+        ),
+        "parameters": {
+            "type": "object",
+            "required": ["operation"],
+            "properties": {
+                "operation": {
+                    "type": "string",
+                    "enum": ["delete", "rename", "undo"],
+                },
+                "sheet_title": {
+                    "type": ["string", "null"],
+                    "description": "Title of the target sheet — approximate wording is fine; omit to target the most recent sheet.",
+                    "default": None,
+                },
+                "new_title": {
+                    "type": ["string", "null"],
+                    "description": "New sheet title (operation=rename only).",
+                    "default": None,
+                },
+            },
+        },
+    },
+}
+
+CREATE_DASHBOARD_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "create_dashboard",
+        "description": (
+            "Assemble existing worksheets of the session workbook into a dashboard "
+            "('mets les charts dans un dashboard'). Do NOT use to create charts."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "title": {
+                    "type": ["string", "null"],
+                    "description": "Dashboard title (default: 'Dashboard').",
+                    "default": None,
+                },
+                "sheet_titles": {
+                    "type": "array",
+                    "description": "Sheets to include (approximate titles ok). Omit or empty = ALL sheets.",
+                    "default": [],
+                    "items": {"type": "string"},
+                },
+            },
+        },
+    },
+}
+
+TOOLS = [GENERATE_CHART_TOOL, QUERY_DATA_TOOL, MANAGE_WORKSHEET_TOOL, CREATE_DASHBOARD_TOOL]
 
 
 def _describe_filter(f) -> str:
@@ -190,6 +332,12 @@ def _describe_filter(f) -> str:
     op = (f.op or "").lower()
     if op in ("in",) and f.values is not None:
         return f"{field} — in {list(f.values)}"
+    if op == "not_in" and f.values is not None:
+        return f"{field} — NOT in {list(f.values)}"
+    if op == "neq":
+        return f"{field} — ≠ {f.value}"
+    if op == "date_range":
+        return f"{field} — between {f.date_min or '…'} and {f.date_max or '…'}"
     if op == "between" and f.min is not None and f.max is not None:
         return f"{field} — between [{f.min}, {f.max}]"
     if op in ("top_n", "bottom_n") and f.by:

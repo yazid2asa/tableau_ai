@@ -105,7 +105,10 @@ async def _call_openai_compatible(
                 f"[{provider_label}] Malformed response: {exc}"
             ) from exc
         content = message.get("content")
-        tool_calls_raw = message.get("tool_calls", [])
+        # `or []`, not a .get default: Mistral emits an explicit "tool_calls":
+        # null on plain-text answers (OpenRouter/Groq omit the key entirely),
+        # and .get's default doesn't apply to an explicit null.
+        tool_calls_raw = message.get("tool_calls") or []
 
         parsed_tool_calls = []
         for tc in tool_calls_raw:
@@ -257,87 +260,107 @@ async def _call_google(
     return LLMResponse(content=content, tool_calls=parsed_tool_calls)
 
 
+# Ordered fallback chain per primary provider. A provider is skipped when its
+# key is missing (the LAST one is always attempted so a missing terminal key
+# surfaces as a clear auth error rather than a silent no-op), and abandoned for
+# the next KEYED provider on a transient error. Hard errors (401/402) propagate.
+_FALLBACK_CHAINS: dict[str, list[str]] = {
+    "mistral": ["mistral", "google", "openrouter"],
+    # Measured 2026-07-09 (eval_intent, 20-question matrix): gemini-2.5-flash
+    # 20/20, mistral-large-latest 16/20, mistral-medium-latest 13/20 → Google
+    # keeps the primary (repo rule: adopt only on a measured ≥), Mistral is
+    # the paid, reliable fallback ahead of the free OpenRouter model.
+    "google": ["google", "mistral", "openrouter"],
+    "groq": ["groq", "openrouter"],
+    "openrouter": ["openrouter"],
+}
+
+
+def _provider_key(provider: str) -> str:
+    return {
+        "mistral": settings.mistral_api_key,
+        "google": settings.google_api_key,
+        "groq": settings.groq_api_key,
+        "openrouter": settings.openrouter_api_key,
+    }.get(provider, "")
+
+
+def _provider_model(provider: str) -> str:
+    return {
+        "mistral": settings.mistral_model_id,
+        "google": settings.google_model_id,
+        "groq": settings.groq_model_id,
+        "openrouter": settings.model_id,
+    }.get(provider, settings.model_id)
+
+
+async def _dispatch(provider: str, messages: list[dict],
+                    model_override: str | None, tools: list[dict] | None) -> LLMResponse:
+    model = model_override or _provider_model(provider)
+    if provider == "google":
+        return await _call_google(model, messages, tools=tools)
+    if provider == "groq":
+        return await _call_openai_compatible(
+            settings.groq_base_url, settings.groq_api_key, model, messages,
+            timeout=30.0, provider_label="groq", tools=tools)
+    if provider == "mistral":
+        # La Plateforme is OpenAI-compatible (chat/completions + tools).
+        return await _call_openai_compatible(
+            settings.mistral_base_url, settings.mistral_api_key, model, messages,
+            timeout=45.0, provider_label="mistral", tools=tools)
+    return await _call_openai_compatible(
+        settings.openrouter_base_url, settings.openrouter_api_key, model, messages,
+        timeout=60.0, provider_label="openrouter", tools=tools)
+
+
 async def call_llm(
     messages: list[dict],
     model_override: str | None = None,
     provider_override: str | None = None,
     tools: list[dict] | None = None,
 ) -> LLMResponse:
-    """Call the LLM via the configured provider.
+    """Call the LLM via the configured provider's fallback chain
+    (mistral → google → openrouter ; google/groq → openrouter).
 
-    Groq and Google fall back to OpenRouter on a transient failure (rate limit,
-    5xx, timeout, transport error, malformed/empty response) when an OpenRouter
-    key is available. Hard errors (bad key, no credits) propagate immediately.
+    A transient failure (rate limit, 5xx, timeout, transport error,
+    malformed/empty response) advances to the next provider in the chain that
+    has an API key. Hard errors (bad key, no credits) propagate immediately.
     """
     provider = provider_override or settings.llm_provider
+    chain = _FALLBACK_CHAINS.get(provider)
+    if chain is None:
+        raise ValueError(
+            f"Unknown LLM provider: {provider!r}. Use 'mistral', 'google', 'openrouter', or 'groq'.")
 
-    if provider == "groq":
-        if not settings.groq_api_key:
-            logger.info("llm: no GROQ_API_KEY configured, falling back to OpenRouter")
-            provider = "openrouter"
-        else:
-            model = model_override or settings.groq_model_id
-            try:
-                result = await _call_openai_compatible(
-                    settings.groq_base_url, settings.groq_api_key, model, messages,
-                    timeout=30.0, provider_label="groq", tools=tools,
-                )
-                logger.info("llm: provider=groq model=%s", model)
-                return result
-            except Exception as exc:
-                if _is_transient_error(exc) and settings.openrouter_api_key:
-                    logger.warning("llm: Groq transient error (%s), falling back to OpenRouter", exc)
-                    provider = "openrouter"
-                else:
-                    raise
+    for i, prov in enumerate(chain):
+        is_last = i == len(chain) - 1
+        if not _provider_key(prov) and not is_last:
+            logger.info("llm: no %s API key configured, falling back to %s", prov, chain[i + 1])
+            continue
+        try:
+            result = await _dispatch(prov, messages, model_override, tools)
+            logger.info("llm: provider=%s model=%s", prov, model_override or _provider_model(prov))
+            return result
+        except Exception as exc:
+            fallback = next((p for p in chain[i + 1:] if _provider_key(p)), None)
+            if _is_transient_error(exc) and fallback is not None:
+                logger.warning("llm: %s transient error (%s), falling back to %s",
+                               prov, exc, fallback)
+                continue
+            raise
 
-    if provider == "google":
-        if not settings.google_api_key:
-            logger.info("llm: no GOOGLE_API_KEY configured, falling back to OpenRouter")
-            provider = "openrouter"
-        else:
-            model = model_override or settings.google_model_id
-            try:
-                result = await _call_google(model, messages, tools=tools)
-                logger.info("llm: provider=google model=%s", model)
-                return result
-            except Exception as exc:
-                if _is_transient_error(exc) and settings.openrouter_api_key:
-                    logger.warning("llm: Google transient error (%s), falling back to OpenRouter", exc)
-                    provider = "openrouter"
-                else:
-                    raise
-
-    if provider == "openrouter":
-        model = model_override or settings.model_id
-        result = await _call_openai_compatible(
-            settings.openrouter_base_url, settings.openrouter_api_key, model, messages,
-            timeout=60.0, provider_label="openrouter", tools=tools,
-        )
-        logger.info("llm: provider=openrouter model=%s", model)
-        return result
-
-    raise ValueError(f"Unknown LLM provider: {provider!r}. Use 'groq', 'openrouter', or 'google'.")
+    raise ValueError(f"No usable provider in chain for {provider!r}.")  # unreachable
 
 
 def get_active_provider() -> str:
     """The provider call_llm will actually use, accounting for no-key fallback."""
-    provider = settings.llm_provider
-    if provider == "groq" and not settings.groq_api_key:
-        return "openrouter"
-    if provider == "google" and not settings.google_api_key:
-        return "openrouter"
-    return provider
+    chain = _FALLBACK_CHAINS.get(settings.llm_provider, ["openrouter"])
+    return next((p for p in chain if _provider_key(p)), chain[-1])
 
 
 def get_active_model() -> str:
     """The model id of the active provider (see get_active_provider)."""
-    provider = get_active_provider()
-    if provider == "groq":
-        return settings.groq_model_id
-    if provider == "google":
-        return settings.google_model_id
-    return settings.model_id
+    return _provider_model(get_active_provider())
 
 
 async def check_provider_status() -> str:
@@ -355,8 +378,10 @@ async def check_provider_status() -> str:
         except Exception:
             return "unreachable"
 
-    # OpenAI-compatible providers (groq / openrouter)
-    if provider == "groq":
+    # OpenAI-compatible providers (mistral / groq / openrouter)
+    if provider == "mistral":
+        base_url, api_key = settings.mistral_base_url, settings.mistral_api_key
+    elif provider == "groq":
         base_url, api_key = settings.groq_base_url, settings.groq_api_key
     else:
         base_url, api_key = settings.openrouter_base_url, settings.openrouter_api_key

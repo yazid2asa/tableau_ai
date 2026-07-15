@@ -240,6 +240,240 @@ async def get_datasource_content_url(luid: str) -> str:
     return await asyncio.to_thread(_do)
 
 
+async def get_dimension_members(datasource_luid: str, field_caption: str,
+                                limit: int = 500) -> list[str]:
+    """Return the distinct string members of a dimension via the VizQL Data Service.
+
+    Used to validate/correct LLM-generated filter VALUES against what actually
+    exists in the datasource (FIX-054). Querying a single dimension field returns
+    its distinct domain. Returns [] on any failure (auth, VDS disabled, unknown
+    field) so the caller degrades gracefully to "no correction" rather than erroring.
+    """
+    import httpx
+
+    def _do() -> list[str]:
+        server = _ensure_signed_in()
+        token = server.auth_token
+        base = settings.tableau_server_url.rstrip("/")
+        url = f"{base}/api/v1/vizql-data-service/query-datasource"
+        body = {
+            "datasource": {"datasourceLuid": datasource_luid},
+            "query": {"fields": [{"fieldCaption": field_caption}]},
+        }
+        headers = {
+            "X-Tableau-Auth": token,
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        }
+        try:
+            resp = httpx.post(url, json=body, headers=headers, timeout=30.0)
+        except Exception as exc:
+            logger.warning("VDS member query transport error for %s.%s: %s",
+                           datasource_luid, field_caption, exc)
+            return []
+        if resp.status_code != 200:
+            # On auth expiry, reset+retry once (mirror publish_workbook).
+            if _is_auth_error(Exception(str(resp.status_code))) or resp.status_code in (401, 403):
+                _sign_out_and_reset()
+                server2 = _ensure_signed_in()
+                headers["X-Tableau-Auth"] = server2.auth_token
+                try:
+                    resp = httpx.post(url, json=body, headers=headers, timeout=30.0)
+                except Exception:
+                    return []
+            if resp.status_code != 200:
+                logger.warning("VDS member query HTTP %s for %s.%s: %s",
+                               resp.status_code, datasource_luid, field_caption, resp.text[:200])
+                return []
+        try:
+            rows = resp.json().get("data", [])
+        except Exception:
+            return []
+        members: list[str] = []
+        for row in rows:
+            # single-field query → one key per row; take its value
+            for v in row.values():
+                if v is not None and str(v) != "":
+                    members.append(str(v))
+                break
+            if len(members) >= limit:
+                break
+        return members
+
+    return await asyncio.to_thread(_do)
+
+
+# VizQL Data Service aggregate functions accepted by query-datasource.
+_VDS_AGG_FUNCTIONS = {"SUM", "AVG", "MEDIAN", "COUNT", "COUNTD", "MIN", "MAX"}
+
+
+async def query_datasource_aggregate(
+    datasource_luid: str,
+    measure_caption: str,
+    aggregation: str = "SUM",
+    group_by: str | None = None,
+    filters: list[dict] | None = None,
+    limit: int = 50,
+) -> list[dict]:
+    """Aggregate query via the VizQL Data Service — the data behind `query_data`
+    (direct factual answers in chat, no chart generated).
+
+    Same endpoint/auth/retry pattern as get_dimension_members (proven by FIX-054).
+    ``filters`` is a list of ``{"field": caption, "values": [...]}`` dicts,
+    emitted as VDS SET filters. Returns the raw row dicts (e.g.
+    ``[{"Region": "Ouest", "SUM(Sales)": 1234.5}]``; a single row when group_by
+    is None) or ``[]`` on any failure so the caller degrades to a friendly
+    "couldn't fetch" message instead of erroring the chat turn.
+    """
+    import httpx
+
+    agg = (aggregation or "SUM").upper()
+    if agg not in _VDS_AGG_FUNCTIONS:
+        agg = "SUM"
+
+    fields: list[dict] = []
+    if group_by:
+        fields.append({"fieldCaption": group_by})
+    fields.append({"fieldCaption": measure_caption, "function": agg})
+
+    body: dict = {
+        "datasource": {"datasourceLuid": datasource_luid},
+        "query": {"fields": fields},
+    }
+    vds_filters = []
+    for f in (filters or []):
+        fld = f.get("field")
+        vals = f.get("values") or ([f["value"]] if f.get("value") is not None else [])
+        if fld and vals:
+            vds_filters.append({
+                "field": {"fieldCaption": fld},
+                "filterType": "SET",
+                "values": [str(v) for v in vals],
+                "exclude": bool(f.get("exclude", False)),
+            })
+    if vds_filters:
+        body["query"]["filters"] = vds_filters
+
+    def _do() -> list[dict]:
+        server = _ensure_signed_in()
+        token = server.auth_token
+        base = settings.tableau_server_url.rstrip("/")
+        url = f"{base}/api/v1/vizql-data-service/query-datasource"
+        headers = {
+            "X-Tableau-Auth": token,
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        }
+        try:
+            resp = httpx.post(url, json=body, headers=headers, timeout=30.0)
+        except Exception as exc:
+            logger.warning("VDS aggregate query transport error for %s.%s: %s",
+                           datasource_luid, measure_caption, exc)
+            return []
+        if resp.status_code != 200:
+            if resp.status_code in (401, 403):
+                _sign_out_and_reset()
+                server2 = _ensure_signed_in()
+                headers["X-Tableau-Auth"] = server2.auth_token
+                try:
+                    resp = httpx.post(url, json=body, headers=headers, timeout=30.0)
+                except Exception:
+                    return []
+            if resp.status_code != 200:
+                logger.warning("VDS aggregate query HTTP %s for %s.%s: %s",
+                               resp.status_code, datasource_luid, measure_caption,
+                               resp.text[:200])
+                return []
+        try:
+            rows = resp.json().get("data", [])
+        except Exception:
+            return []
+        return rows[:limit] if isinstance(rows, list) else []
+
+    return await asyncio.to_thread(_do)
+
+
+async def query_dimension_pairs(
+    datasource_luid: str,
+    field_a: str,
+    field_b: str | None = None,
+    filters: list[dict] | None = None,
+    limit: int = 2000,
+) -> list[dict]:
+    """Distinct dimension values (or value pairs) via the VizQL Data Service.
+
+    One field → its (optionally filtered) distinct domain; two fields → the
+    distinct ``(a, b)`` combinations. This is the mapping primitive behind the
+    cross-datasource ``query_data`` join (C1b): the dimension-owning datasource
+    answers "which linking values match this filter?" (e.g. the vehicle_ids of
+    brand Ford) or "which group does each linking value belong to?" (vehicle_id
+    → brand). Same endpoint / auth-retry pattern as ``query_datasource_aggregate``
+    (proven by FIX-054). ``filters`` uses the same ``{"field", "values",
+    "exclude"}`` shape. Returns ``[]`` on any failure so the caller degrades to
+    a friendly message instead of erroring the chat turn.
+    """
+    import httpx
+
+    fields = [{"fieldCaption": field_a}]
+    if field_b:
+        fields.append({"fieldCaption": field_b})
+    body: dict = {
+        "datasource": {"datasourceLuid": datasource_luid},
+        "query": {"fields": fields},
+    }
+    vds_filters = []
+    for f in (filters or []):
+        fld = f.get("field")
+        vals = f.get("values") or ([f["value"]] if f.get("value") is not None else [])
+        if fld and vals:
+            vds_filters.append({
+                "field": {"fieldCaption": fld},
+                "filterType": "SET",
+                "values": [str(v) for v in vals],
+                "exclude": bool(f.get("exclude", False)),
+            })
+    if vds_filters:
+        body["query"]["filters"] = vds_filters
+
+    def _do() -> list[dict]:
+        server = _ensure_signed_in()
+        token = server.auth_token
+        base = settings.tableau_server_url.rstrip("/")
+        url = f"{base}/api/v1/vizql-data-service/query-datasource"
+        headers = {
+            "X-Tableau-Auth": token,
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        }
+        try:
+            resp = httpx.post(url, json=body, headers=headers, timeout=30.0)
+        except Exception as exc:
+            logger.warning("VDS pair query transport error for %s.%s/%s: %s",
+                           datasource_luid, field_a, field_b, exc)
+            return []
+        if resp.status_code != 200:
+            if resp.status_code in (401, 403):
+                _sign_out_and_reset()
+                server2 = _ensure_signed_in()
+                headers["X-Tableau-Auth"] = server2.auth_token
+                try:
+                    resp = httpx.post(url, json=body, headers=headers, timeout=30.0)
+                except Exception:
+                    return []
+            if resp.status_code != 200:
+                logger.warning("VDS pair query HTTP %s for %s.%s/%s: %s",
+                               resp.status_code, datasource_luid, field_a, field_b,
+                               resp.text[:200])
+                return []
+        try:
+            rows = resp.json().get("data", [])
+        except Exception:
+            return []
+        return rows[:limit] if isinstance(rows, list) else []
+
+    return await asyncio.to_thread(_do)
+
+
 # ---------------------------------------------------------------------------
 # Metadata API (GraphQL) — Datasource schemas
 # TSC has native metadata.query() support

@@ -59,14 +59,16 @@ def test_ranks_by_field_relevance():
     assert result[0].datasource_name == "Sales DB"
 
 
-def test_top_3_limit():
-    """Only top 3 datasources are returned when more than 3 exist."""
+def test_all_non_sample_datasources_returned():
+    """EVERY non-sample datasource is returned (FIX-011 — the old top-3 cap hid
+    datasources ranked 4+ from the LLM, so valid questions got 'I don't see
+    field X' even though X existed in a lower-ranked datasource)."""
     datasources = [
         _ds(f"DS_{i}", [f"Field_{i}"], f"luid-{i}")
         for i in range(6)
     ]
     result = _rank_datasources_by_relevance("anything", datasources)
-    assert len(result) == 3
+    assert len(result) == 6
 
 
 def test_empty_list_returns_empty():

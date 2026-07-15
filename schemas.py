@@ -48,12 +48,14 @@ class ChatRequest(BaseModel):
 
 class FilterSpec(BaseModel):
     field: str
-    op: str  # eq, in, gt, gte, lt, lte, between, year, quarter,
-             # month, last_n_days, last_n_months, top_n, bottom_n, not_null
+    op: str  # eq, in, neq, not_in, gt, gte, lt, lte, between, year, quarter,
+             # month, date_range, last_n_days, last_n_months, top_n, bottom_n, not_null
     value: Optional[Any] = None
-    values: Optional[list] = None   # for op=in
+    values: Optional[list] = None   # for op=in / not_in
     min: Optional[float] = None     # for op=between
     max: Optional[float] = None     # for op=between
+    date_min: Optional[str] = None  # for op=date_range — ISO date "YYYY-MM-DD"
+    date_max: Optional[str] = None  # for op=date_range — ISO date "YYYY-MM-DD"
     by: Optional[str] = None        # for top_n/bottom_n: rank by this field
     display_type: Optional[str] = None  # "single_value_list", "multi_value_list", "dropdown", "dropdown_search", "slider_range", "relative_date"
     show_filter_card: bool = True
@@ -87,6 +89,9 @@ class VizIntent(BaseModel):
     action: Optional[str] = None  # "new" | "modify" | "clarify"
     datasource_luid: Optional[str] = None
     secondary_datasource_luid: Optional[str] = None
+    # C5: linking field for the blend when the user names it explicitly
+    # ("lie-les sur vehicle_id") — takes precedence over auto-detection.
+    blend_linking_field: Optional[str] = None
 
 
 class ConversationTurn(BaseModel):
